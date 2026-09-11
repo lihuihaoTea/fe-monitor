@@ -3,9 +3,11 @@
   "compilerOptions": {
     "outDir": "./dist",
     "rootDir": "./src",
-    "module": "ESNext",
+    "module": "nodenext",
     "target": "ES2020",
-    "moduleResolution": "node"
+    "moduleResolution": "nodenext",
+    "declaration": false,
+    "declarationMap": false
   },
   "include": ["src/**/*"]
 }

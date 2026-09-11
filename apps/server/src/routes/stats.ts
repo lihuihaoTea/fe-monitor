@@ -3,6 +3,25 @@ import { db } from '../db/index.js';
 
 export const statsRouter = Router();
 
+function parseRangeBound(value: unknown, bound: 'start' | 'end'): number {
+  if (typeof value !== 'string' || value.length === 0) {
+    return bound === 'start' ? 0 : Date.now();
+  }
+
+  const dayOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (dayOnly) {
+    const year = Number(dayOnly[1]);
+    const month = Number(dayOnly[2]) - 1;
+    const day = Number(dayOnly[3]);
+    return bound === 'start'
+      ? new Date(year, month, day, 0, 0, 0, 0).getTime()
+      : new Date(year, month, day, 23, 59, 59, 999).getTime();
+  }
+
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? (bound === 'start' ? 0 : Date.now()) : parsed;
+}
+
 statsRouter.get('/', (req, res) => {
   try {
     const { appId, startDate, endDate } = req.query;
@@ -11,8 +30,8 @@ statsRouter.get('/', (req, res) => {
       return res.status(400).json({ error: 'appId is required' });
     }
 
-    const start = startDate ? new Date(startDate as string).getTime() : 0;
-    const end = endDate ? new Date(endDate as string).getTime() : Date.now();
+    const start = parseRangeBound(startDate, 'start');
+    const end = parseRangeBound(endDate, 'end');
 
     const errorStats = db.prepare(`
       SELECT 

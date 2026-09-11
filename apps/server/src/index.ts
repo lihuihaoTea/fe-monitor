@@ -13,7 +13,12 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3100;
 
-app.use(cors());
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 const dataDir = path.join(__dirname, '../data');

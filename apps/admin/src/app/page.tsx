@@ -6,13 +6,20 @@ import { PerformancePanel } from '@/components/PerformancePanel';
 import { BehaviorPanel } from '@/components/BehaviorPanel';
 import { DailyTrendChart } from '@/components/DailyTrendChart';
 
+function toLocalDateInput(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export default function Home() {
   const [appId, setAppId] = useState('demo-app');
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [dateRange, setDateRange] = useState({
-    start: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-    end: new Date().toISOString().split('T')[0],
+    start: toLocalDateInput(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)),
+    end: toLocalDateInput(new Date()),
   });
 
   useEffect(() => {
