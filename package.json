@@ -1,0 +1,19 @@
+{
+  "name": "fe-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "前端可观测性监控系统",
+  "scripts": {
+    "dev:server": "pnpm --filter @fe-monitor/server dev",
+    "dev:admin": "pnpm --filter @fe-monitor/admin dev",
+    "dev:demo": "pnpm --filter @fe-monitor/demo dev",
+    "build:sdk": "pnpm --filter @fe-monitor/sdk build",
+    "build:server": "pnpm --filter @fe-monitor/server build",
+    "build:admin": "pnpm --filter @fe-monitor/admin build",
+    "build": "pnpm build:sdk && pnpm build:server && pnpm build:admin",
+    "db:init": "pnpm --filter @fe-monitor/server db:init"
+  },
+  "keywords": ["frontend", "monitoring", "observability", "error-tracking"],
+  "author": "",
+  "license": "MIT"
+}
