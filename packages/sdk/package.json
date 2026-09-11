@@ -1,6 +1,6 @@
 {
   "name": "@fe-monitor/sdk",
-  "version": "1.0.1",
+  "version": "1.0.0",
   "description": "前端监控 SDK",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -39,7 +39,11 @@
   "bugs": {
     "url": "https://github.com/lihuihaoTea/fe-monitor/issues"
   },
-  "keywords": ["frontend", "monitoring", "sdk"],
+  "keywords": [
+    "frontend",
+    "monitoring",
+    "sdk"
+  ],
   "author": "",
   "license": "MIT",
   "devDependencies": {
