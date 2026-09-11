@@ -17,9 +17,27 @@
       }
     }
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsup src/index.ts --format cjs,esm --dts --clean",
-    "dev": "tsup src/index.ts --format cjs,esm --dts --watch"
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "prepublishOnly": "pnpm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lihuihaoTea/fe-monitor.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/lihuihaoTea/fe-monitor/tree/main/packages/sdk",
+  "bugs": {
+    "url": "https://github.com/lihuihaoTea/fe-monitor/issues"
   },
   "keywords": ["frontend", "monitoring", "sdk"],
   "author": "",
