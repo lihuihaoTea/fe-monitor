@@ -71,11 +71,28 @@ pnpm dev:demo
 
 ### 安装
 
+发布到 npm 后，其他项目可直接安装：
+
 ```bash
 npm install @fe-monitor/sdk
 # 或
 pnpm add @fe-monitor/sdk
+# 或
+yarn add @fe-monitor/sdk
 ```
+
+### 发布 SDK（GitHub Actions）
+
+1. 在仓库 **Settings → Secrets and variables → Actions** 中添加 `NPM_TOKEN`（npm Access Token，需具备 publish 权限；scoped 包需可发布 `@fe-monitor`）
+2. 更新 `packages/sdk/package.json` 中的 `version`
+3. 提交并打 tag 后推送：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+也可在 Actions 页手动运行 **Publish SDK** workflow。
 
 ### 初始化
 

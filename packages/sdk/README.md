@@ -9,7 +9,11 @@
 
 ```bash
 npm install @fe-monitor/sdk
+# 或
+pnpm add @fe-monitor/sdk
 ```
+
+包由 GitHub Actions 在打 `v*` tag 时自动发布到 npm。
 
 ## 快速开始
 
