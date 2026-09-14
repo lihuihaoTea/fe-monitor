@@ -13,6 +13,8 @@ on:
 
 permissions:
   contents: read
+  # 若改用 npm Trusted Publishing（OIDC），需保留 id-token: write
+  id-token: write
 
 concurrency:
   group: publish-sdk-${{ github.ref }}
@@ -22,9 +24,6 @@ jobs:
   publish:
     name: Build & Publish @fe-monitor/sdk
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: .
 
     steps:
       - name: Checkout
@@ -40,6 +39,7 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          always-auth: true
           cache: pnpm
 
       - name: Install dependencies
@@ -59,10 +59,30 @@ jobs:
           fi
           echo "Publishing @fe-monitor/sdk@$PKG_VERSION"
 
+      - name: Check NPM_TOKEN
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::缺少 Secrets.NPM_TOKEN。请到仓库 Settings → Secrets and variables → Actions 新增 NPM_TOKEN（npm Access Token，Automation 类型，需有 publish 权限）。"
+            exit 1
+          fi
+
       - name: Publish to npm
         working-directory: packages/sdk
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           DIST_TAG="${{ github.event.inputs.dist_tag || 'latest' }}"
-          pnpm publish --access public --no-git-checks --tag "$DIST_TAG"
+
+          # 显式写入鉴权，避免仅依赖 setup-node 生成的 .npmrc
+          printf '%s\n' \
+            "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" \
+            "registry=https://registry.npmjs.org/" \
+            "always-auth=true" > .npmrc
+
+          # pack + npm publish：鉴权比直接 pnpm publish 更稳定
+          pnpm pack
+          TARBALL="$(ls fe-monitor-sdk-*.tgz | head -n 1)"
+          npm publish "$TARBALL" --access public --tag "$DIST_TAG"
+          rm -f .npmrc fe-monitor-sdk-*.tgz

@@ -83,16 +83,16 @@ yarn add @fe-monitor/sdk
 
 ### 发布 SDK（GitHub Actions）
 
-1. 在仓库 **Settings → Secrets and variables → Actions** 中添加 `NPM_TOKEN`（npm Access Token，需具备 publish 权限；scoped 包需可发布 `@fe-monitor`）
-2. 更新 `packages/sdk/package.json` 中的 `version`
-3. 提交并打 tag 后推送：
+1. 在 [npmjs.com](https://www.npmjs.com) 登录 → **Access Tokens** → 创建 **Automation** token（需能发布 `@fe-monitor` scope）
+2. 在仓库 **Settings → Secrets and variables → Actions** 新增 Secret，名称必须为 `NPM_TOKEN`，值为上一步的 token
+3. 更新 `packages/sdk/package.json` 中的 `version` 后提交，再打 tag 并推送：
 
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-也可在 Actions 页手动运行 **Publish SDK** workflow。
+也可在 Actions 页手动运行 **Publish SDK** workflow。若报 `ENEEDAUTH` /「缺少 Secrets.NPM_TOKEN」，说明 Secret 未配置或名称写错。
 
 ### 初始化
 
