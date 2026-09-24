@@ -1,12 +1,15 @@
-
-import { Card, Spin, Table } from 'antd';
+import { Card, Segmented, Space, Spin, Table, Typography } from 'antd';
 import { MetricSummary } from '@/components/MetricSummary';
 import { CombinedTrendChart } from '@/components/CombinedTrendChart';
 import { LatestErrorList } from '@/components/LatestErrorList';
-import { useFilters } from '@/context/FilterContext';
+import {
+  LATEST_LIMIT_OPTIONS,
+  useFilters,
+  type LatestLimit,
+} from '@/context/FilterContext';
 
 export function StabilityDashboard() {
-  const { stats, loading } = useFilters();
+  const { stats, loading, latestLimit, setLatestLimit } = useFilters();
   const errors = stats?.errors;
   const stability = stats?.stability;
   const daily = stats?.daily || [];
@@ -39,6 +42,29 @@ export function StabilityDashboard() {
             { name: '404', field: 'notFound404' },
           ]}
         />
+
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            flexWrap: 'wrap',
+          }}
+        >
+          <Typography.Text type="secondary">最新错误列表</Typography.Text>
+          <Space size={8}>
+            <Typography.Text type="secondary">条数</Typography.Text>
+            <Segmented
+              value={latestLimit}
+              options={LATEST_LIMIT_OPTIONS.map((n) => ({
+                label: String(n),
+                value: n,
+              }))}
+              onChange={(value) => setLatestLimit(value as LatestLimit)}
+            />
+          </Space>
+        </div>
 
         <LatestErrorList
           title="最新 JS 错误"

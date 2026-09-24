@@ -158,29 +158,37 @@ statsRouter.get('/', (req, res) => {
       clicks: row.clicks || 0,
     }));
 
+    const LATEST_LIMIT_OPTIONS = [20, 50, 100, 200];
+    const parsedLimit = Number(req.query.latestLimit);
+    const latestLimit = LATEST_LIMIT_OPTIONS.includes(parsedLimit) ? parsedLimit : 20;
+
     const latestStmt = db.prepare(`
       SELECT id, type, sub_type, timestamp, url, data
       FROM events
       WHERE app_id = ? AND type = ? AND timestamp >= ? AND timestamp <= ?
       ORDER BY timestamp DESC
-      LIMIT 20
+      LIMIT ?
     `);
 
-    const latestJsErrors = db.prepare(`
-      SELECT id, type, sub_type, timestamp, url, data
-      FROM events
-      WHERE app_id = ? AND ${JS_ERROR_SQL} AND timestamp >= ? AND timestamp <= ?
-      ORDER BY timestamp DESC
-      LIMIT 20
-    `).all(appId, start, end);
+    const latestJsErrors = db
+      .prepare(
+        `SELECT id, type, sub_type, timestamp, url, data
+         FROM events
+         WHERE app_id = ? AND ${JS_ERROR_SQL} AND timestamp >= ? AND timestamp <= ?
+         ORDER BY timestamp DESC
+         LIMIT ?`
+      )
+      .all(appId, start, end, latestLimit);
 
-    const latest404 = db.prepare(`
-      SELECT id, type, sub_type, timestamp, url, data
-      FROM events
-      WHERE app_id = ? AND ${NOT_FOUND_SQL} AND timestamp >= ? AND timestamp <= ?
-      ORDER BY timestamp DESC
-      LIMIT 20
-    `).all(appId, start, end);
+    const latest404 = db
+      .prepare(
+        `SELECT id, type, sub_type, timestamp, url, data
+         FROM events
+         WHERE app_id = ? AND ${NOT_FOUND_SQL} AND timestamp >= ? AND timestamp <= ?
+         ORDER BY timestamp DESC
+         LIMIT ?`
+      )
+      .all(appId, start, end, latestLimit);
 
     const mapLatest = (rows: any[]) =>
       rows.map((row) => {
@@ -226,8 +234,8 @@ statsRouter.get('/', (req, res) => {
 
     const latest = {
       jsErrors: mapLatest(latestJsErrors),
-      resourceErrors: mapLatest(latestStmt.all(appId, 'resource', start, end)),
-      apiErrors: mapLatest(latestStmt.all(appId, 'api', start, end)),
+      resourceErrors: mapLatest(latestStmt.all(appId, 'resource', start, end, latestLimit)),
+      apiErrors: mapLatest(latestStmt.all(appId, 'api', start, end, latestLimit)),
       notFound404: mapLatest(latest404),
     };
 
