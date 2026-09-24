@@ -8,6 +8,6 @@
   },
   "devDependencies": {
     "vite": "^5.0.0",
-    "@fe-monitor/sdk": "workspace:*"
+    "fe-monitor-kit": "workspace:*"
   }
 }

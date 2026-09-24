@@ -47,7 +47,7 @@ importers:
 
   apps/demo:
     devDependencies:
-      '@fe-monitor/sdk':
+      'fe-monitor-kit':
         specifier: workspace:*
         version: link:../../packages/sdk
       vite:

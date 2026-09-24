@@ -7,13 +7,14 @@
     "dev:server": "pnpm --filter @fe-monitor/server dev",
     "dev:admin": "pnpm --filter @fe-monitor/admin dev",
     "dev:demo": "pnpm --filter @fe-monitor/demo dev",
-    "build:sdk": "pnpm --filter @fe-monitor/sdk build",
-    "pack:sdk": "pnpm build:sdk && pnpm --filter @fe-monitor/sdk pack --pack-destination .",
-    "publish:sdk": "pnpm build:sdk && pnpm --filter @fe-monitor/sdk publish --access public --no-git-checks",
+    "build:sdk": "pnpm --filter fe-monitor-kit build",
+    "pack:sdk": "pnpm build:sdk && pnpm --filter fe-monitor-kit pack --pack-destination .",
+    "publish:sdk": "pnpm build:sdk && pnpm --filter fe-monitor-kit publish --access public --no-git-checks --registry https://registry.npmjs.org/",
     "build:server": "pnpm --filter @fe-monitor/server build",
     "build:admin": "pnpm --filter @fe-monitor/admin build",
     "build": "pnpm build:sdk && pnpm build:server && pnpm build:admin",
-    "db:init": "pnpm --filter @fe-monitor/server db:init"
+    "db:init": "pnpm --filter @fe-monitor/server db:init",
+    "prepublishOnly": "echo '根目录不可发布。请使用: pnpm publish:sdk' && exit 1"
   },
   "keywords": ["frontend", "monitoring", "observability", "error-tracking"],
   "author": "",

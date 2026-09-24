@@ -1,4 +1,4 @@
-import monitor from '@fe-monitor/sdk';
+import monitor from 'fe-monitor-kit';
 
 monitor.init({
   endpoint: 'https://api.lihuihao.chat/api/report',

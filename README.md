@@ -7,7 +7,7 @@
 ```
 fe-monitor/
 ├── packages/
-│   └── sdk/                 # @fe-monitor/sdk - 浏览器 SDK
+│   └── sdk/                 # fe-monitor-kit - 浏览器 SDK
 ├── apps/
 │   ├── server/             # @fe-monitor/server - 数据收集服务 (Express + SQLite)
 │   ├── admin/              # @fe-monitor/admin - 管理后台 (Next.js)
@@ -69,49 +69,41 @@ pnpm dev:demo
 
 ## 📖 SDK 使用方法
 
-### 安装（推荐，无需 CI）
-
-仓库已提交 SDK 构建产物，业务项目直接依赖 Git 子目录即可，**不用再本地编译**：
+### 安装
 
 ```bash
-pnpm add git+ssh://git@gitlab.sucoupon.com:lihuihao/fe-monitor.git#path:packages/sdk
-```
-
-其他方式：
-
-```bash
-# 安装本地/内网分发的 tgz（本仓库执行 pnpm pack:sdk 生成）
-pnpm add ./fe-monitor-sdk-1.0.0.tgz
-
-# 若已发布到 npm
-pnpm add @fe-monitor/sdk
+pnpm add fe-monitor-kit
+# 或
+npm install fe-monitor-kit
+# 或
+yarn add fe-monitor-kit
 ```
 
 ### 初始化
 
 ```javascript
-import monitor from '@fe-monitor/sdk';
+import monitor from "fe-monitor-kit";
 
 monitor.init({
-  endpoint: 'https://api.lihuihao.chat/api/report',  // 数据上报地址
-  appId: 'your-app-id',                          // 应用标识
-  sampleRate: 1,                                  // 采样率 (0-1), 默认 1
-  debug: false,                                   // 调试模式, 默认 false
+  endpoint: "https://api.lihuihao.chat/api/report", // 数据上报地址
+  appId: "your-app-id", // 应用标识
+  sampleRate: 1, // 采样率 (0-1), 默认 1
+  debug: false, // 调试模式, 默认 false
 });
 ```
 
 ### 手动上报错误
 
 ```javascript
-monitor.error(new Error('自定义错误'), { extra: 'data' });
+monitor.error(new Error("自定义错误"), { extra: "data" });
 ```
 
 ### 自定义事件追踪
 
 ```javascript
-monitor.track('button_click', {
-  buttonName: '提交按钮',
-  page: '首页',
+monitor.track("button_click", {
+  buttonName: "提交按钮",
+  page: "首页",
 });
 ```
 
@@ -144,22 +136,26 @@ monitor.track('button_click', {
 ## 🛠️ 技术栈
 
 ### SDK (`packages/sdk`)
+
 - TypeScript
 - tsup (构建工具)
 - 零依赖，轻量级
 
 ### 数据服务 (`apps/server`)
+
 - Express.js
 - better-sqlite3
 - TypeScript + tsx
 
 ### 管理后台 (`apps/admin`)
+
 - Next.js 14 (App Router)
 - React 18
 - Tailwind CSS
 - Recharts (图表)
 
 ### 演示页面 (`apps/demo`)
+
 - Vite
 - 原生 HTML/JS
 
@@ -167,20 +163,20 @@ monitor.track('button_click', {
 
 ### 事件表 (events)
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| id | INTEGER | 主键 |
-| type | TEXT | 事件类型: error/resource/api/blank/performance/behavior |
-| sub_type | TEXT | 子类型 |
-| timestamp | INTEGER | 客户端时间戳 |
-| app_id | TEXT | 应用 ID |
-| session_id | TEXT | 会话 ID |
-| visitor_id | TEXT | 访客 ID |
-| url | TEXT | 页面 URL |
-| user_agent | TEXT | User Agent |
-| client_ip | TEXT | 客户端 IP |
-| data | TEXT | JSON 数据 |
-| created_at | INTEGER | 服务端接收时间 |
+| 字段       | 类型    | 说明                                                    |
+| ---------- | ------- | ------------------------------------------------------- |
+| id         | INTEGER | 主键                                                    |
+| type       | TEXT    | 事件类型: error/resource/api/blank/performance/behavior |
+| sub_type   | TEXT    | 子类型                                                  |
+| timestamp  | INTEGER | 客户端时间戳                                            |
+| app_id     | TEXT    | 应用 ID                                                 |
+| session_id | TEXT    | 会话 ID                                                 |
+| visitor_id | TEXT    | 访客 ID                                                 |
+| url        | TEXT    | 页面 URL                                                |
+| user_agent | TEXT    | User Agent                                              |
+| client_ip  | TEXT    | 客户端 IP                                               |
+| data       | TEXT    | JSON 数据                                               |
+| created_at | INTEGER | 服务端接收时间                                          |
 
 ## 📊 API 接口
 
@@ -243,6 +239,7 @@ GET /api/stats?appId=demo-app&startDate=2024-01-01&endDate=2024-01-31
 ## 🎨 特性
 
 ### SDK 特性
+
 - 🚀 轻量级，无第三方依赖
 - 📦 支持 ESM/CJS 双格式
 - 🔒 类型安全 (TypeScript)
@@ -252,6 +249,7 @@ GET /api/stats?appId=demo-app&startDate=2024-01-01&endDate=2024-01-31
 - 🤖 自动过滤爬虫流量
 
 ### 服务端特性
+
 - 🗄️ 轻量级 SQLite 数据库
 - 🚫 自动过滤爬虫请求
 - 🌐 CORS 支持 (本地开发)
@@ -259,6 +257,7 @@ GET /api/stats?appId=demo-app&startDate=2024-01-01&endDate=2024-01-31
 - 💪 数据验证和清洗
 
 ### 管理后台特性
+
 - 📱 响应式设计
 - 🎨 现代化 UI (Tailwind CSS)
 - 📈 可视化图表 (Recharts)
@@ -269,12 +268,14 @@ GET /api/stats?appId=demo-app&startDate=2024-01-01&endDate=2024-01-31
 ## 📝 注意事项
 
 1. **生产环境配置**
+
    - 修改 CORS 设置
    - 使用环境变量管理配置
    - 考虑使用 PostgreSQL/MySQL 替代 SQLite
    - 添加认证和权限控制
 
 2. **性能优化**
+
    - 根据实际流量调整采样率
    - 定期清理历史数据
    - 考虑引入消息队列处理高并发

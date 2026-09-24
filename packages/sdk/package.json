@@ -1,5 +1,5 @@
 {
-  "name": "@fe-monitor/sdk",
+  "name": "fe-monitor-kit",
   "version": "1.0.0",
   "description": "前端监控 SDK - 错误 / 性能 / 行为采集",
   "main": "./dist/index.js",
@@ -28,7 +28,8 @@
     "prepublishOnly": "npm run build"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "repository": {
     "type": "git",
