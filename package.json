@@ -32,12 +32,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@gitlab.sucoupon.com/lihuihao/fe-monitor.git",
+    "url": "git+https://github.com/lihuihaoTea/fe-monitor.git",
     "directory": "packages/sdk"
   },
-  "homepage": "https://gitlab.sucoupon.com/lihuihao/fe-monitor/-/tree/main/packages/sdk",
+  "homepage": "https://github.com/lihuihaoTea/fe-monitor/tree/main/packages/sdk",
   "bugs": {
-    "url": "https://gitlab.sucoupon.com/lihuihao/fe-monitor/-/issues"
+    "url": "https://github.com/lihuihaoTea/fe-monitor/issues"
   },
   "keywords": [
     "frontend",
