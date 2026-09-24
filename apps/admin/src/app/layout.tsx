@@ -1,19 +1,18 @@
-import type { Metadata } from 'next'
-import './globals.css'
+import type { Metadata } from 'next';
+import { Providers } from '@/components/Providers';
+import './globals.css';
 
 export const metadata: Metadata = {
   title: '前端监控管理后台',
-  description: '实时监控前端应用性能与错误',
-}
+  description: '性能 / 稳定性 / 用户行为监控看板',
+};
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="zh-CN">
-      <body>{children}</body>
+      <body>
+        <Providers>{children}</Providers>
+      </body>
     </html>
-  )
+  );
 }
