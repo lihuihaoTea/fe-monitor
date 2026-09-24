@@ -1,6 +1,6 @@
 {
   "name": "fe-monitor-kit",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "前端监控 SDK - 错误 / 性能 / 行为采集",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
