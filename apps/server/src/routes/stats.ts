@@ -158,16 +158,22 @@ statsRouter.get('/', (req, res) => {
       clicks: row.clicks || 0,
     }));
 
-    const LATEST_LIMIT_OPTIONS = [20, 50, 100, 200];
-    const parsedLimit = Number(req.query.latestLimit);
-    const latestLimit = LATEST_LIMIT_OPTIONS.includes(parsedLimit) ? parsedLimit : 20;
+    const LATEST_LIMIT_OPTIONS = [20, 50, 100, 200] as const;
+    const rawLimit = Array.isArray(req.query.latestLimit)
+      ? req.query.latestLimit[0]
+      : req.query.latestLimit;
+    const parsedLimit = Number(rawLimit);
+    const latestLimit = (LATEST_LIMIT_OPTIONS as readonly number[]).includes(parsedLimit)
+      ? parsedLimit
+      : 20;
 
+    // LIMIT 使用白名单整数直接拼接，避免部分环境下绑定参数对 LIMIT 无效
     const latestStmt = db.prepare(`
       SELECT id, type, sub_type, timestamp, url, data
       FROM events
       WHERE app_id = ? AND type = ? AND timestamp >= ? AND timestamp <= ?
       ORDER BY timestamp DESC
-      LIMIT ?
+      LIMIT ${latestLimit}
     `);
 
     const latestJsErrors = db
@@ -176,9 +182,9 @@ statsRouter.get('/', (req, res) => {
          FROM events
          WHERE app_id = ? AND ${JS_ERROR_SQL} AND timestamp >= ? AND timestamp <= ?
          ORDER BY timestamp DESC
-         LIMIT ?`
+         LIMIT ${latestLimit}`
       )
-      .all(appId, start, end, latestLimit);
+      .all(appId, start, end);
 
     const latest404 = db
       .prepare(
@@ -186,9 +192,9 @@ statsRouter.get('/', (req, res) => {
          FROM events
          WHERE app_id = ? AND ${NOT_FOUND_SQL} AND timestamp >= ? AND timestamp <= ?
          ORDER BY timestamp DESC
-         LIMIT ?`
+         LIMIT ${latestLimit}`
       )
-      .all(appId, start, end, latestLimit);
+      .all(appId, start, end);
 
     const mapLatest = (rows: any[]) =>
       rows.map((row) => {
@@ -234,12 +240,15 @@ statsRouter.get('/', (req, res) => {
 
     const latest = {
       jsErrors: mapLatest(latestJsErrors),
-      resourceErrors: mapLatest(latestStmt.all(appId, 'resource', start, end, latestLimit)),
-      apiErrors: mapLatest(latestStmt.all(appId, 'api', start, end, latestLimit)),
+      resourceErrors: mapLatest(latestStmt.all(appId, 'resource', start, end)),
+      apiErrors: mapLatest(latestStmt.all(appId, 'api', start, end)),
       notFound404: mapLatest(latest404),
     };
 
     res.json({
+      meta: {
+        latestLimit,
+      },
       errors: {
         total: errorStats.reduce((sum: number, item: any) => sum + item.count, 0),
         byType: errorStats,

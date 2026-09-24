@@ -61,7 +61,7 @@ export function StabilityDashboard() {
                 label: String(n),
                 value: n,
               }))}
-              onChange={(value) => setLatestLimit(value as LatestLimit)}
+              onChange={(value) => setLatestLimit(Number(value) as LatestLimit)}
             />
           </Space>
         </div>
