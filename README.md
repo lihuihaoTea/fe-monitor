@@ -48,7 +48,7 @@ pnpm build:sdk
 # 终端 1: 启动数据收集服务 (端口 3100)
 pnpm dev:server
 
-# 终端 2: 启动管理后台 (端口 3000)
+# 终端 2: 启动管理后台 (端口 3500)
 pnpm dev:admin
 
 # 终端 3: 启动演示页面 (端口 3200)
@@ -64,7 +64,7 @@ pnpm dev:demo
 ### 访问应用
 
 - **演示页面**: http://localhost:3200
-- **管理后台**: http://localhost:3000
+- **管理后台**: http://localhost:3500
 - **数据 API**: https://api.lihuihao.chat
 
 ## 📖 SDK 使用方法

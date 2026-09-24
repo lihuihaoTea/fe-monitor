@@ -73,7 +73,7 @@ fe-monitor/
 ## 端口分配
 
 - **3100**: 数据收集服务 (Express)
-- **3000**: 管理后台 (Vite)
+- **3500**: 管理后台 (Vite)
 - **3200**: 演示页面 (Vite)
 
 ## 主要命令
@@ -90,7 +90,7 @@ pnpm db:init
 
 # 启动开发服务
 pnpm dev:server   # 端口 3100
-pnpm dev:admin    # 端口 3000
+pnpm dev:admin    # 端口 3500
 pnpm dev:demo     # 端口 3200
 
 # 一键启动所有服务

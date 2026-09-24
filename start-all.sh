@@ -15,7 +15,7 @@ pnpm dev:demo &
 echo ""
 echo "✅ 所有服务已启动！"
 echo ""
-echo "📊 管理后台: http://localhost:3000"
+echo "📊 管理后台: http://localhost:3500"
 echo "🧪 演示页面: http://localhost:3200"
 echo "🔌 数据 API: http://localhost:3100"
 echo ""
