@@ -1,13 +1,9 @@
-'use client';
-
 import { useMemo } from 'react';
-import dynamic from 'next/dynamic';
+import ReactECharts from 'echarts-for-react';
 import { Card, theme } from 'antd';
 import type { EChartsOption } from 'echarts';
 import type { DailyPoint } from '@/lib/types';
 import { CHART_PALETTE } from '@/lib/chartColors';
-
-const ReactECharts = dynamic(() => import('echarts-for-react'), { ssr: false });
 
 export type CombinedSeries = {
   name: string;

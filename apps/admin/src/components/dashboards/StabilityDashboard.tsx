@@ -1,4 +1,3 @@
-'use client';
 
 import { Card, Spin, Table } from 'antd';
 import { MetricSummary } from '@/components/MetricSummary';

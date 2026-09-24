@@ -1,7 +1,4 @@
-'use client';
-
-import { AntdRegistry } from '@ant-design/nextjs-registry';
-import { App, ConfigProvider, theme as antdTheme } from 'antd';
+import { App as AntApp, ConfigProvider, theme as antdTheme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import dayjs from 'dayjs';
 import 'dayjs/locale/zh-cn';
@@ -34,40 +31,38 @@ function AppTheme({ children }: { children: React.ReactNode }) {
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <AntdRegistry>
-      <ConfigProvider
-        locale={zhCN}
-        theme={{
-          cssVar: { key: 'monitor' },
-          hashed: false,
-          token: {
-            colorPrimary: getAppThemeColor('qly'),
-            borderRadius: 8,
-            colorBgLayout: '#f0f2f5',
-            fontFamily:
-              '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif',
+    <ConfigProvider
+      locale={zhCN}
+      theme={{
+        cssVar: { key: 'monitor' },
+        hashed: false,
+        token: {
+          colorPrimary: getAppThemeColor('qly'),
+          borderRadius: 8,
+          colorBgLayout: '#f0f2f5',
+          fontFamily:
+            '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif',
+        },
+        components: {
+          Card: {
+            headerFontSize: 15,
           },
-          components: {
-            Card: {
-              headerFontSize: 15,
-            },
-            Table: {
-              headerBorderRadius: 0,
-            },
-            Layout: {
-              headerHeight: 56,
-            },
+          Table: {
+            headerBorderRadius: 0,
           },
-        }}
-      >
-        <App>
-          <FilterProvider>
-            <AppTheme>
-              <AppShell>{children}</AppShell>
-            </AppTheme>
-          </FilterProvider>
-        </App>
-      </ConfigProvider>
-    </AntdRegistry>
+          Layout: {
+            headerHeight: 56,
+          },
+        },
+      }}
+    >
+      <AntApp>
+        <FilterProvider>
+          <AppTheme>
+            <AppShell>{children}</AppShell>
+          </AppTheme>
+        </FilterProvider>
+      </AntApp>
+    </ConfigProvider>
   );
 }

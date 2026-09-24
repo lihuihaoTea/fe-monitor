@@ -1,4 +1,3 @@
-'use client';
 
 import { Spin } from 'antd';
 import { MetricSummary } from '@/components/MetricSummary';

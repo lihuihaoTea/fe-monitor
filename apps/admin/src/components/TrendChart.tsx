@@ -1,4 +1,3 @@
-'use client';
 
 import { Card } from 'antd';
 import { Line } from '@ant-design/charts';

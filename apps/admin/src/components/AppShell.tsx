@@ -1,7 +1,5 @@
-"use client";
-
-import { useMemo } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { useMemo } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Button,
   DatePicker,
@@ -11,35 +9,35 @@ import {
   Space,
   theme,
   Typography,
-} from "antd";
+} from 'antd';
 import {
   DashboardOutlined,
   AlertOutlined,
   TeamOutlined,
   ReloadOutlined,
-} from "@ant-design/icons";
-import type { Dayjs } from "dayjs";
-import { APP_OPTIONS, APP_THEME_COLORS, type AppId } from "@/lib/constants";
-import { useFilters } from "@/context/FilterContext";
+} from '@ant-design/icons';
+import type { Dayjs } from 'dayjs';
+import { APP_OPTIONS, APP_THEME_COLORS, type AppId } from '@/lib/constants';
+import { useFilters } from '@/context/FilterContext';
 
 const { Header, Content } = Layout;
 const { RangePicker } = DatePicker;
 
 const NAV_ITEMS = [
-  { key: "/stability", label: "稳定性看板", icon: <AlertOutlined /> },
-  { key: "/performance", label: "性能看板", icon: <DashboardOutlined /> },
-  { key: "/behavior", label: "用户行为看板", icon: <TeamOutlined /> },
+  { key: '/stability', label: '稳定性看板', icon: <AlertOutlined /> },
+  { key: '/performance', label: '性能看板', icon: <DashboardOutlined /> },
+  { key: '/behavior', label: '用户行为看板', icon: <TeamOutlined /> },
 ];
 
 const APP_SELECT_OPTIONS = APP_OPTIONS.map((opt) => ({
   value: opt.value,
   label: (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
       <span
         style={{
           width: 8,
           height: 8,
-          borderRadius: "50%",
+          borderRadius: '50%',
           background: APP_THEME_COLORS[opt.value],
           flexShrink: 0,
         }}
@@ -50,36 +48,36 @@ const APP_SELECT_OPTIONS = APP_OPTIONS.map((opt) => ({
 }));
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
-  const pathname = usePathname();
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
   const { token } = theme.useToken();
   const { appId, setAppId, dateRange, setDateRange, loading, refresh } =
     useFilters();
 
   const selectedKey = useMemo(() => {
     const match = NAV_ITEMS.find((item) => pathname.startsWith(item.key));
-    return match?.key || "/stability";
+    return match?.key || '/stability';
   }, [pathname]);
 
   const pageTitle = useMemo(
-    () => NAV_ITEMS.find((item) => item.key === selectedKey)?.label || "监控看板",
+    () => NAV_ITEMS.find((item) => item.key === selectedKey)?.label || '监控看板',
     [selectedKey]
   );
 
   return (
-    <Layout style={{ minHeight: "100vh", background: token.colorBgLayout }}>
+    <Layout style={{ minHeight: '100vh', background: token.colorBgLayout }}>
       <Header
         style={{
-          display: "flex",
-          alignItems: "center",
+          display: 'flex',
+          alignItems: 'center',
           gap: 20,
           paddingInline: 24,
           height: 56,
-          lineHeight: "56px",
+          lineHeight: '56px',
           background: token.colorBgContainer,
           borderBottom: `1px solid ${token.colorBorderSecondary}`,
-          boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
-          position: "sticky",
+          boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+          position: 'sticky',
           top: 0,
           zIndex: 100,
         }}
@@ -88,7 +86,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           level={4}
           style={{
             margin: 0,
-            whiteSpace: "nowrap",
+            whiteSpace: 'nowrap',
             fontSize: 17,
             letterSpacing: 0.2,
             color: token.colorPrimary,
@@ -101,13 +99,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           mode="horizontal"
           selectedKeys={[selectedKey]}
           items={NAV_ITEMS}
-          onClick={({ key }) => router.push(key)}
+          onClick={({ key }) => navigate(key)}
           style={{
             flex: 1,
             minWidth: 0,
-            border: "none",
-            background: "transparent",
-            lineHeight: "54px",
+            border: 'none',
+            background: 'transparent',
+            lineHeight: '54px',
           }}
         />
 
@@ -141,17 +139,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <Content
         style={{
-          padding: "20px 24px 32px",
+          padding: '20px 24px 32px',
           maxWidth: 1360,
-          width: "100%",
-          margin: "0 auto",
+          width: '100%',
+          margin: '0 auto',
         }}
       >
         <div
           style={{
-            display: "flex",
-            alignItems: "baseline",
-            justifyContent: "space-between",
+            display: 'flex',
+            alignItems: 'baseline',
+            justifyContent: 'space-between',
             marginBottom: 16,
           }}
         >
@@ -159,7 +157,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {pageTitle}
           </Typography.Title>
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-            {dateRange[0].format("YYYY-MM-DD")} ~ {dateRange[1].format("YYYY-MM-DD")}
+            {dateRange[0].format('YYYY-MM-DD')} ~ {dateRange[1].format('YYYY-MM-DD')}
           </Typography.Text>
         </div>
         {children}

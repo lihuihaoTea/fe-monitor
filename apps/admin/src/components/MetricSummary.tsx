@@ -1,4 +1,3 @@
-'use client';
 
 import { Card, Col, Row, Statistic } from 'antd';
 import { chartColorAt } from '@/lib/chartColors';

@@ -10,7 +10,7 @@ fe-monitor/
 │   └── sdk/                 # fe-monitor-kit - 浏览器 SDK
 ├── apps/
 │   ├── server/             # @fe-monitor/server - 数据收集服务 (Express + SQLite)
-│   ├── admin/              # @fe-monitor/admin - 管理后台 (Next.js)
+│   ├── admin/              # @fe-monitor/admin - 管理后台 (Vite + React)
 │   └── demo/               # @fe-monitor/demo - 演示页面
 └── pnpm-workspace.yaml     # pnpm 工作区配置
 ```
@@ -149,10 +149,10 @@ monitor.track("button_click", {
 
 ### 管理后台 (`apps/admin`)
 
-- Next.js 14 (App Router)
-- React 18
-- Tailwind CSS
-- Recharts (图表)
+- Vite + React 18（纯客户端 SPA）
+- React Router
+- Ant Design 6
+- ECharts（趋势图）
 
 ### 演示页面 (`apps/demo`)
 

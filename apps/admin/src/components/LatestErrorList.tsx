@@ -1,4 +1,3 @@
-'use client';
 
 import { Badge, Card, Table, Tag, Typography, theme } from 'antd';
 import dayjs from 'dayjs';
