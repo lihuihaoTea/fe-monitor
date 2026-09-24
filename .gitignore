@@ -2,6 +2,8 @@ node_modules
 dist
 !packages/sdk/dist/
 !packages/sdk/dist/**
+!apps/admin/dist/
+!apps/admin/dist/**
 .next
 .turbo
 *.log
