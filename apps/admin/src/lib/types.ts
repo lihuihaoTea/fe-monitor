@@ -17,6 +17,7 @@ export interface StatsResponse {
     resourceErrors: number;
     apiErrors: number;
     blankScreens: number;
+    notFound404: number;
   };
   performance: Record<string, number>;
   behavior: {
@@ -30,6 +31,7 @@ export interface StatsResponse {
     jsErrors: LatestErrorItem[];
     resourceErrors: LatestErrorItem[];
     apiErrors: LatestErrorItem[];
+    notFound404: LatestErrorItem[];
   };
 }
 
@@ -41,6 +43,7 @@ export interface DailyPoint {
   resourceErrors: number;
   apiErrors: number;
   blankScreens: number;
+  notFound404: number;
   fcp: number;
   lcp: number;
   load: number;

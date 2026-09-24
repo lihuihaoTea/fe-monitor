@@ -50,6 +50,25 @@ function getVisitorId() {
 function shouldSample(rate) {
   return Math.random() < rate;
 }
+function stringifyErrorValue(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (value instanceof Error) {
+    return value.stack || `${value.name}: ${value.message}` || String(value);
+  }
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      try {
+        return Object.prototype.toString.call(value);
+      } catch {
+        return "[Unserializable Object]";
+      }
+    }
+  }
+  return String(value);
+}
 
 // src/collectors/error.ts
 var ErrorCollector = class {
@@ -74,11 +93,12 @@ var ErrorCollector = class {
         url: window.location.href,
         userAgent: navigator.userAgent,
         data: {
-          message: event.message,
+          message: stringifyErrorValue(event.message || event.error),
           filename: event.filename,
           lineno: event.lineno,
           colno: event.colno,
-          stack: event.error?.stack
+          stack: event.error instanceof Error ? event.error.stack : void 0,
+          error: stringifyErrorValue(event.error)
         }
       };
       this.reporter.report(monitorEvent);
@@ -86,6 +106,7 @@ var ErrorCollector = class {
   }
   listenUnhandledRejection() {
     window.addEventListener("unhandledrejection", (event) => {
+      const reason = event.reason;
       const monitorEvent = {
         type: "error",
         subType: "promise",
@@ -96,11 +117,9 @@ var ErrorCollector = class {
         url: window.location.href,
         userAgent: navigator.userAgent,
         data: {
-          reason: event.reason instanceof Error ? {
-            name: event.reason.name,
-            message: event.reason.message,
-            stack: event.reason.stack
-          } : { message: String(event.reason) }
+          message: stringifyErrorValue(reason),
+          reason: stringifyErrorValue(reason),
+          stack: reason instanceof Error ? reason.stack : void 0
         }
       };
       this.reporter.report(monitorEvent);
@@ -168,7 +187,7 @@ var ApiCollector = class {
         return response;
       }).catch((error) => {
         self.reportApiError("fetch", url, {
-          error: error.message,
+          error: error?.message || stringifyErrorValue(error),
           duration: Date.now() - startTime
         });
         throw error;
@@ -177,27 +196,25 @@ var ApiCollector = class {
   }
   interceptXHR() {
     const self = this;
-    let requestUrl = "";
-    let startTime = 0;
     XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-      requestUrl = url;
-      startTime = Date.now();
+      this.__fe_monitor_url__ = url;
+      this.__fe_monitor_start__ = Date.now();
       return self.originalXHROpen.apply(this, [method, url, ...rest]);
     };
     XMLHttpRequest.prototype.send = function(...args) {
       this.addEventListener("loadend", function() {
         if (this.status >= 400) {
-          self.reportApiError("xhr", requestUrl, {
+          self.reportApiError("xhr", this.__fe_monitor_url__, {
             status: this.status,
             statusText: this.statusText,
-            duration: Date.now() - startTime
+            duration: Date.now() - (this.__fe_monitor_start__ || Date.now())
           });
         }
       });
       this.addEventListener("error", function() {
-        self.reportApiError("xhr", requestUrl, {
+        self.reportApiError("xhr", this.__fe_monitor_url__, {
           error: "Network Error",
-          duration: Date.now() - startTime
+          duration: Date.now() - (this.__fe_monitor_start__ || Date.now())
         });
       });
       return self.originalXHRSend.apply(this, args);
@@ -214,7 +231,7 @@ var ApiCollector = class {
       url: window.location.href,
       userAgent: navigator.userAgent,
       data: {
-        apiUrl: url,
+        apiUrl: typeof url === "string" ? url : String(url?.url || url || ""),
         ...details
       }
     };
@@ -545,9 +562,11 @@ var Monitor = class {
       console.warn("[FE Monitor] Not initialized");
       return;
     }
+    const message = stringifyErrorValue(error);
+    const isNotFound = message === "404";
     const event = {
       type: "error",
-      subType: "manual",
+      subType: isNotFound ? "404" : "manual",
       timestamp: Date.now(),
       appId: this.config.appId,
       sessionId: getSessionId(),
@@ -555,11 +574,12 @@ var Monitor = class {
       url: window.location.href,
       userAgent: navigator.userAgent,
       data: {
+        message,
         error: error instanceof Error ? {
           name: error.name,
           message: error.message,
           stack: error.stack
-        } : { message: String(error) },
+        } : message,
         extra
       }
     };

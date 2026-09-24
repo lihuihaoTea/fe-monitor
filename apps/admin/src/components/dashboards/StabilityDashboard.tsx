@@ -1,8 +1,8 @@
 'use client';
 
-import { Col, Row, Spin, Table } from 'antd';
+import { Card, Spin, Table } from 'antd';
 import { MetricSummary } from '@/components/MetricSummary';
-import { TrendChart } from '@/components/TrendChart';
+import { CombinedTrendChart } from '@/components/CombinedTrendChart';
 import { LatestErrorList } from '@/components/LatestErrorList';
 import { useFilters } from '@/context/FilterContext';
 
@@ -12,107 +12,80 @@ export function StabilityDashboard() {
   const stability = stats?.stability;
   const daily = stats?.daily || [];
   const latest = stats?.latest;
+  const listLoading = loading && !stats;
 
   return (
     <Spin spinning={loading}>
-      <Row gutter={[16, 16]}>
-        <Col span={24}>
-          <MetricSummary
-            loading={loading && !stats}
-            items={[
-              { title: 'JS 错误', value: errors?.total || 0 },
-              { title: '资源加载失败', value: stability?.resourceErrors || 0 },
-              { title: 'API 失败', value: stability?.apiErrors || 0 },
-              { title: '白屏次数', value: stability?.blankScreens || 0 },
-            ]}
-          />
-        </Col>
+      <div className="monitor-page">
+        <MetricSummary
+          loading={listLoading}
+          items={[
+            { title: 'JS 错误', value: errors?.total || 0 },
+            { title: '资源加载失败', value: stability?.resourceErrors || 0 },
+            { title: 'API 失败', value: stability?.apiErrors || 0 },
+            { title: '白屏次数', value: stability?.blankScreens || 0 },
+            { title: '404', value: stability?.notFound404 || 0 },
+          ]}
+        />
 
-        <Col xs={24} lg={12}>
-          <Row gutter={[16, 16]}>
-            <Col span={24}>
-              <TrendChart
-                title="JS 错误趋势"
-                data={daily}
-                yField="errors"
-                loading={loading && !stats}
-              />
-            </Col>
-            <Col span={24}>
-              <LatestErrorList
-                title="最新 JS 错误"
-                data={latest?.jsErrors || []}
-                loading={loading && !stats}
-              />
-            </Col>
-          </Row>
-        </Col>
+        <CombinedTrendChart
+          title="稳定性趋势"
+          data={daily}
+          loading={listLoading}
+          series={[
+            { name: 'JS 错误', field: 'errors' },
+            { name: '资源失败', field: 'resourceErrors' },
+            { name: 'API 失败', field: 'apiErrors' },
+            { name: '白屏', field: 'blankScreens' },
+            { name: '404', field: 'notFound404' },
+          ]}
+        />
 
-        <Col xs={24} lg={12}>
-          <Row gutter={[16, 16]}>
-            <Col span={24}>
-              <TrendChart
-                title="资源失败趋势"
-                data={daily}
-                yField="resourceErrors"
-                loading={loading && !stats}
-              />
-            </Col>
-            <Col span={24}>
-              <LatestErrorList
-                title="最新资源失败"
-                data={latest?.resourceErrors || []}
-                loading={loading && !stats}
-              />
-            </Col>
-          </Row>
-        </Col>
+        <LatestErrorList
+          title="最新 JS 错误"
+          data={latest?.jsErrors || []}
+          loading={listLoading}
+        />
 
-        <Col xs={24} lg={12}>
-          <Row gutter={[16, 16]}>
-            <Col span={24}>
-              <TrendChart
-                title="API 失败趋势"
-                data={daily}
-                yField="apiErrors"
-                loading={loading && !stats}
-              />
-            </Col>
-            <Col span={24}>
-              <LatestErrorList
-                title="最新 API 失败"
-                data={latest?.apiErrors || []}
-                loading={loading && !stats}
-              />
-            </Col>
-          </Row>
-        </Col>
+        <LatestErrorList
+          title="最新资源失败"
+          data={latest?.resourceErrors || []}
+          loading={listLoading}
+        />
 
-        <Col xs={24} lg={12}>
-          <TrendChart
-            title="白屏趋势"
-            data={daily}
-            yField="blankScreens"
-            loading={loading && !stats}
-          />
-        </Col>
+        <LatestErrorList
+          title="最新 API 失败"
+          data={latest?.apiErrors || []}
+          loading={listLoading}
+        />
 
-        <Col span={24}>
+        <LatestErrorList
+          title="最新 404"
+          data={latest?.notFound404 || []}
+          loading={listLoading}
+        />
+
+        <Card
+          className="monitor-card monitor-table-card"
+          title="错误类型分布"
+          styles={{ body: { paddingTop: 4, paddingBottom: 8 } }}
+        >
           <Table
             rowKey="sub_type"
-            size="middle"
+            size="small"
             pagination={false}
-            loading={loading && !stats}
+            loading={listLoading}
+            scroll={{ x: '100%', y: 300 }}
+            tableLayout="fixed"
             dataSource={errors?.byType || []}
             columns={[
-              { title: '错误类型', dataIndex: 'sub_type' },
-              { title: '次数', dataIndex: 'count' },
+              { title: '错误类型', dataIndex: 'sub_type', width: 480, ellipsis: true },
+              { title: '次数', dataIndex: 'count', width: 120 },
             ]}
-            title={() => '错误类型分布'}
             locale={{ emptyText: '暂无数据' }}
           />
-        </Col>
-      </Row>
+        </Card>
+      </div>
     </Spin>
   );
 }

@@ -26,6 +26,27 @@ export function shouldSample(rate: number): boolean {
   return Math.random() < rate;
 }
 
+/** 将 Error / 对象 / 其他值统一转为可读字符串，便于上报与展示 */
+export function stringifyErrorValue(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (value instanceof Error) {
+    return value.stack || `${value.name}: ${value.message}` || String(value);
+  }
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      try {
+        return Object.prototype.toString.call(value);
+      } catch {
+        return '[Unserializable Object]';
+      }
+    }
+  }
+  return String(value);
+}
+
 export function safeStringify(obj: any, maxDepth = 3): string {
   const seen = new WeakSet();
   

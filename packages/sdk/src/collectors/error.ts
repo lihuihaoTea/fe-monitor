@@ -1,5 +1,5 @@
 import type { MonitorConfig, MonitorEvent } from '../types';
-import { getSessionId, getVisitorId } from '../utils';
+import { getSessionId, getVisitorId, stringifyErrorValue } from '../utils';
 import type { Reporter } from '../reporter';
 
 export class ErrorCollector {
@@ -30,11 +30,12 @@ export class ErrorCollector {
         url: window.location.href,
         userAgent: navigator.userAgent,
         data: {
-          message: event.message,
+          message: stringifyErrorValue(event.message || event.error),
           filename: event.filename,
           lineno: event.lineno,
           colno: event.colno,
-          stack: event.error?.stack,
+          stack: event.error instanceof Error ? event.error.stack : undefined,
+          error: stringifyErrorValue(event.error),
         },
       };
 
@@ -44,6 +45,7 @@ export class ErrorCollector {
 
   private listenUnhandledRejection() {
     window.addEventListener('unhandledrejection', (event) => {
+      const reason = event.reason;
       const monitorEvent: MonitorEvent = {
         type: 'error',
         subType: 'promise',
@@ -54,11 +56,9 @@ export class ErrorCollector {
         url: window.location.href,
         userAgent: navigator.userAgent,
         data: {
-          reason: event.reason instanceof Error ? {
-            name: event.reason.name,
-            message: event.reason.message,
-            stack: event.reason.stack,
-          } : { message: String(event.reason) },
+          message: stringifyErrorValue(reason),
+          reason: stringifyErrorValue(reason),
+          stack: reason instanceof Error ? reason.stack : undefined,
         },
       };
 

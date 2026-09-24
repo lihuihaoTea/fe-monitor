@@ -35,7 +35,38 @@ export function initDB() {
     CREATE INDEX IF NOT EXISTS idx_timestamp ON events(timestamp);
     CREATE INDEX IF NOT EXISTS idx_visitor_id ON events(visitor_id);
     CREATE INDEX IF NOT EXISTS idx_created_at ON events(created_at);
+
+    CREATE TABLE IF NOT EXISTS event_filters (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_type TEXT NOT NULL,
+      match_type TEXT NOT NULL,
+      match_value TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      note TEXT,
+      created_at INTEGER NOT NULL,
+      UNIQUE(event_type, match_type, match_value)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_event_filters_enabled ON event_filters(enabled);
   `);
 
+  seedDefaultFilters();
   console.log('Database initialized successfully');
+}
+
+/** 首次初始化写入默认筛除项（已存在则跳过） */
+function seedDefaultFilters() {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO event_filters
+      (event_type, match_type, match_value, enabled, note, created_at)
+    VALUES (?, ?, ?, 1, ?, ?)
+  `);
+  const now = Date.now();
+  const defaults: Array<[string, string, string, string]> = [
+    ['api', 'host', 'i.clarity.ms', 'Microsoft Clarity 上报'],
+    ['resource', 'url_prefix', 'https://p26.douyinpic.com', '抖音图片 CDN'],
+  ];
+  for (const [eventType, matchType, matchValue, note] of defaults) {
+    insert.run(eventType, matchType, matchValue, note, now);
+  }
 }

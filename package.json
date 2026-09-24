@@ -14,6 +14,8 @@
     "build:admin": "pnpm --filter @fe-monitor/admin build",
     "build": "pnpm build:sdk && pnpm build:server && pnpm build:admin",
     "db:init": "pnpm --filter @fe-monitor/server db:init",
+    "db:filters": "pnpm --filter @fe-monitor/server db:filters",
+    "db:clean-filtered": "pnpm --filter @fe-monitor/server db:clean-filtered",
     "prepublishOnly": "echo '根目录不可发布。请使用: pnpm publish:sdk' && exit 1"
   },
   "keywords": ["frontend", "monitoring", "observability", "error-tracking"],

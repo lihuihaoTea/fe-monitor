@@ -8,6 +8,7 @@ const EMPTY_DAILY: Omit<DailyPoint, 'date'> = {
   resourceErrors: 0,
   apiErrors: 0,
   blankScreens: 0,
+  notFound404: 0,
   fcp: 0,
   lcp: 0,
   load: 0,
@@ -30,6 +31,7 @@ function normalizeDailyPoint(raw: Partial<DailyPoint> & { date?: string }, date:
     resourceErrors: toNumber(raw.resourceErrors),
     apiErrors: toNumber(raw.apiErrors),
     blankScreens: toNumber(raw.blankScreens),
+    notFound404: toNumber(raw.notFound404),
     fcp: toNumber(raw.fcp),
     lcp: toNumber(raw.lcp),
     load: toNumber(raw.load),
@@ -95,6 +97,7 @@ export function normalizeStats(
       resourceErrors: toNumber(raw?.stability?.resourceErrors),
       apiErrors: toNumber(raw?.stability?.apiErrors),
       blankScreens: toNumber(raw?.stability?.blankScreens),
+      notFound404: toNumber(raw?.stability?.notFound404),
     },
     performance: {
       fcp: toNumber(performanceRaw.fcp),
@@ -113,6 +116,7 @@ export function normalizeStats(
       jsErrors: (raw?.latest?.jsErrors || []).map(normalizeLatestItem),
       resourceErrors: (raw?.latest?.resourceErrors || []).map(normalizeLatestItem),
       apiErrors: (raw?.latest?.apiErrors || []).map(normalizeLatestItem),
+      notFound404: (raw?.latest?.notFound404 || []).map(normalizeLatestItem),
     },
   };
 }

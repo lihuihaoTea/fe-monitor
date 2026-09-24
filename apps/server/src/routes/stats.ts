@@ -3,6 +3,21 @@ import { db } from '../db/index.js';
 
 export const statsRouter = Router();
 
+/** 页面 404：monitor.error('404') → sub_type=404 或 data.message=404 */
+const NOT_FOUND_SQL = `(
+  type = 'error' AND (
+    sub_type = '404'
+    OR CAST(json_extract(data, '$.message') AS TEXT) = '404'
+  )
+)`;
+
+const JS_ERROR_SQL = `(
+  type = 'error' AND NOT (
+    sub_type = '404'
+    OR CAST(json_extract(data, '$.message') AS TEXT) = '404'
+  )
+)`;
+
 function parseRangeBound(value: unknown, bound: 'start' | 'end'): number {
   if (typeof value !== 'string' || value.length === 0) {
     return bound === 'start' ? 0 : Date.now();
@@ -38,7 +53,7 @@ statsRouter.get('/', (req, res) => {
         sub_type,
         COUNT(*) as count
       FROM events
-      WHERE app_id = ? AND type = 'error' AND timestamp >= ? AND timestamp <= ?
+      WHERE app_id = ? AND ${JS_ERROR_SQL} AND timestamp >= ? AND timestamp <= ?
       GROUP BY sub_type
     `).all(appId, start, end);
 
@@ -58,6 +73,12 @@ statsRouter.get('/', (req, res) => {
       SELECT COUNT(*) as count
       FROM events
       WHERE app_id = ? AND type = 'blank' AND timestamp >= ? AND timestamp <= ?
+    `).get(appId, start, end) as { count: number };
+
+    const notFound404 = db.prepare(`
+      SELECT COUNT(*) as count
+      FROM events
+      WHERE app_id = ? AND ${NOT_FOUND_SQL} AND timestamp >= ? AND timestamp <= ?
     `).get(appId, start, end) as { count: number };
 
     const performanceMetrics = db.prepare(`
@@ -98,10 +119,11 @@ statsRouter.get('/', (req, res) => {
         date(timestamp / 1000, 'unixepoch', 'localtime') as date,
         COUNT(CASE WHEN type = 'behavior' AND sub_type = 'pv' THEN 1 END) as pv,
         COUNT(DISTINCT CASE WHEN type = 'behavior' AND sub_type = 'pv' THEN visitor_id END) as uv,
-        COUNT(CASE WHEN type = 'error' THEN 1 END) as errors,
+        COUNT(CASE WHEN ${JS_ERROR_SQL} THEN 1 END) as errors,
         COUNT(CASE WHEN type = 'resource' THEN 1 END) as resourceErrors,
         COUNT(CASE WHEN type = 'api' THEN 1 END) as apiErrors,
         COUNT(CASE WHEN type = 'blank' THEN 1 END) as blankScreens,
+        COUNT(CASE WHEN ${NOT_FOUND_SQL} THEN 1 END) as notFound404,
         AVG(CASE WHEN type = 'performance' AND sub_type = 'fcp'
           THEN CAST(json_extract(data, '$.value') AS REAL) END) as fcp,
         AVG(CASE WHEN type = 'performance' AND sub_type = 'lcp'
@@ -127,6 +149,7 @@ statsRouter.get('/', (req, res) => {
       resourceErrors: row.resourceErrors || 0,
       apiErrors: row.apiErrors || 0,
       blankScreens: row.blankScreens || 0,
+      notFound404: row.notFound404 || 0,
       fcp: Math.round(row.fcp || 0),
       lcp: Math.round(row.lcp || 0),
       load: Math.round(row.load || 0),
@@ -143,6 +166,22 @@ statsRouter.get('/', (req, res) => {
       LIMIT 20
     `);
 
+    const latestJsErrors = db.prepare(`
+      SELECT id, type, sub_type, timestamp, url, data
+      FROM events
+      WHERE app_id = ? AND ${JS_ERROR_SQL} AND timestamp >= ? AND timestamp <= ?
+      ORDER BY timestamp DESC
+      LIMIT 20
+    `).all(appId, start, end);
+
+    const latest404 = db.prepare(`
+      SELECT id, type, sub_type, timestamp, url, data
+      FROM events
+      WHERE app_id = ? AND ${NOT_FOUND_SQL} AND timestamp >= ? AND timestamp <= ?
+      ORDER BY timestamp DESC
+      LIMIT 20
+    `).all(appId, start, end);
+
     const mapLatest = (rows: any[]) =>
       rows.map((row) => {
         let payload: any = {};
@@ -154,12 +193,16 @@ statsRouter.get('/', (req, res) => {
 
         let message = '';
         if (row.type === 'error') {
-          message =
-            payload.message ||
-            payload.reason?.message ||
-            payload.error?.message ||
-            payload.reason ||
-            '未知错误';
+          if (row.sub_type === '404' || payload.message === '404') {
+            message = '页面路由未找到 (404)';
+          } else {
+            message =
+              payload.message ||
+              payload.reason?.message ||
+              payload.error?.message ||
+              payload.reason ||
+              '未知错误';
+          }
         } else if (row.type === 'resource') {
           message = payload.resourceUrl || payload.tagName || '资源加载失败';
         } else if (row.type === 'api') {
@@ -182,9 +225,10 @@ statsRouter.get('/', (req, res) => {
       });
 
     const latest = {
-      jsErrors: mapLatest(latestStmt.all(appId, 'error', start, end)),
+      jsErrors: mapLatest(latestJsErrors),
       resourceErrors: mapLatest(latestStmt.all(appId, 'resource', start, end)),
       apiErrors: mapLatest(latestStmt.all(appId, 'api', start, end)),
+      notFound404: mapLatest(latest404),
     };
 
     res.json({
@@ -196,6 +240,7 @@ statsRouter.get('/', (req, res) => {
         resourceErrors: resourceErrors.count,
         apiErrors: apiErrors.count,
         blankScreens: blankScreens.count,
+        notFound404: notFound404.count,
       },
       performance: performanceMetrics.reduce((acc: any, item: any) => {
         acc[item.metric] = Math.round(item.avg_value || 0);

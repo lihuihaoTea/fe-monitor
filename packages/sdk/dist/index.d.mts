@@ -24,7 +24,7 @@ declare class Monitor {
     init(config: MonitorConfig): void;
     private initCollectors;
     track(eventType: string, data: any): void;
-    error(error: Error | string, extra?: any): void;
+    error(error: Error | string | Record<string, unknown> | unknown, extra?: any): void;
     destroy(): void;
 }
 declare const monitor: Monitor;

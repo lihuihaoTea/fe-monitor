@@ -14,7 +14,7 @@ export class ResourceCollector {
   install() {
     window.addEventListener('error', (event) => {
       const target = event.target as any;
-      
+
       if (target !== window && (target.src || target.href)) {
         const monitorEvent: MonitorEvent = {
           type: 'resource',

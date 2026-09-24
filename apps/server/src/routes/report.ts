@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { db } from '../db/index.js';
+import { shouldFilterEvent } from '../filters/eventFilters.js';
 
 export const reportRouter = Router();
 
@@ -56,12 +57,18 @@ reportRouter.post('/', (req, res) => {
 
     const now = Date.now();
     let inserted = 0;
+    let filtered = 0;
 
     for (const event of events) {
       if (!validateEvent(event)) continue;
       
       const userAgent = event.userAgent || '';
       if (isBot(userAgent)) continue;
+
+      if (shouldFilterEvent(event)) {
+        filtered++;
+        continue;
+      }
 
       try {
         stmt.run(
@@ -83,7 +90,7 @@ reportRouter.post('/', (req, res) => {
       }
     }
 
-    res.json({ success: true, inserted });
+    res.json({ success: true, inserted, filtered });
   } catch (error) {
     console.error('Report error:', error);
     res.status(500).json({ error: 'Internal server error' });

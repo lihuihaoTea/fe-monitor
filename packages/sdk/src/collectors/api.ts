@@ -1,5 +1,5 @@
 import type { MonitorConfig, MonitorEvent } from '../types';
-import { getSessionId, getVisitorId } from '../utils';
+import { getSessionId, getVisitorId, stringifyErrorValue } from '../utils';
 import type { Reporter } from '../reporter';
 
 export class ApiCollector {
@@ -24,12 +24,12 @@ export class ApiCollector {
 
   private interceptFetch() {
     const self = this;
-    window.fetch = function(...args: any[]) {
+    window.fetch = function (...args: any[]) {
       const startTime = Date.now();
       const url = args[0];
 
       return self.originalFetch.apply(this, args as any)
-        .then(response => {
+        .then((response) => {
           if (response.status >= 400) {
             self.reportApiError('fetch', url, {
               status: response.status,
@@ -39,9 +39,9 @@ export class ApiCollector {
           }
           return response;
         })
-        .catch(error => {
+        .catch((error) => {
           self.reportApiError('fetch', url, {
-            error: error.message,
+            error: error?.message || stringifyErrorValue(error),
             duration: Date.now() - startTime,
           });
           throw error;
@@ -51,30 +51,28 @@ export class ApiCollector {
 
   private interceptXHR() {
     const self = this;
-    let requestUrl = '';
-    let startTime = 0;
 
-    XMLHttpRequest.prototype.open = function(method: string, url: string, ...rest: any[]) {
-      requestUrl = url;
-      startTime = Date.now();
+    XMLHttpRequest.prototype.open = function (method: string, url: string, ...rest: any[]) {
+      (this as any).__fe_monitor_url__ = url;
+      (this as any).__fe_monitor_start__ = Date.now();
       return self.originalXHROpen.apply(this, [method, url, ...rest]);
     };
 
-    XMLHttpRequest.prototype.send = function(...args: any[]) {
-      this.addEventListener('loadend', function() {
+    XMLHttpRequest.prototype.send = function (...args: any[]) {
+      this.addEventListener('loadend', function () {
         if (this.status >= 400) {
-          self.reportApiError('xhr', requestUrl, {
+          self.reportApiError('xhr', (this as any).__fe_monitor_url__, {
             status: this.status,
             statusText: this.statusText,
-            duration: Date.now() - startTime,
+            duration: Date.now() - ((this as any).__fe_monitor_start__ || Date.now()),
           });
         }
       });
 
-      this.addEventListener('error', function() {
-        self.reportApiError('xhr', requestUrl, {
+      this.addEventListener('error', function () {
+        self.reportApiError('xhr', (this as any).__fe_monitor_url__, {
           error: 'Network Error',
-          duration: Date.now() - startTime,
+          duration: Date.now() - ((this as any).__fe_monitor_start__ || Date.now()),
         });
       });
 
@@ -93,7 +91,7 @@ export class ApiCollector {
       url: window.location.href,
       userAgent: navigator.userAgent,
       data: {
-        apiUrl: url,
+        apiUrl: typeof url === 'string' ? url : String((url as any)?.url || url || ''),
         ...details,
       },
     };

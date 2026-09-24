@@ -1,17 +1,14 @@
 'use client';
 
-import { Col, Row, Spin } from 'antd';
+import { Spin } from 'antd';
 import { MetricSummary } from '@/components/MetricSummary';
-import { TrendChart } from '@/components/TrendChart';
+import { CombinedTrendChart } from '@/components/CombinedTrendChart';
 import { useFilters } from '@/context/FilterContext';
 
-function formatDuration(ms: number) {
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-  if (minutes > 0) {
-    return `${minutes}分${seconds % 60}秒`;
-  }
-  return `${seconds}秒`;
+/** ms → 分钟，保留 1 位小数 */
+function msToMinutes(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0) return 0;
+  return Math.round((ms / 60000) * 10) / 10;
 }
 
 export function BehaviorDashboard() {
@@ -21,31 +18,41 @@ export function BehaviorDashboard() {
 
   return (
     <Spin spinning={loading}>
-      <Row gutter={[16, 16]}>
-        <Col span={24}>
-          <MetricSummary
-            loading={loading && !stats}
-            items={[
-              { title: '页面访问 (PV)', value: behavior?.pv || 0 },
-              { title: '独立访客 (UV)', value: behavior?.uv || 0 },
-              { title: '平均停留', value: formatDuration(behavior?.avgStay || 0) },
-              { title: '总点击次数', value: behavior?.totalClicks || 0 },
-            ]}
-          />
-        </Col>
-        <Col xs={24} lg={12}>
-          <TrendChart title="PV 趋势" data={daily} yField="pv" loading={loading && !stats} />
-        </Col>
-        <Col xs={24} lg={12}>
-          <TrendChart title="UV 趋势" data={daily} yField="uv" loading={loading && !stats} />
-        </Col>
-        <Col xs={24} lg={12}>
-          <TrendChart title="停留时长趋势" data={daily} yField="avgStay" unit="ms" loading={loading && !stats} />
-        </Col>
-        <Col xs={24} lg={12}>
-          <TrendChart title="点击次数趋势" data={daily} yField="clicks" loading={loading && !stats} />
-        </Col>
-      </Row>
+      <div className="monitor-page">
+        {/* 顺序与趋势图 series 一致，共用 CHART_PALETTE 下标 */}
+        <MetricSummary
+          loading={loading && !stats}
+          items={[
+            { title: '页面访问 (PV)', value: behavior?.pv || 0 },
+            { title: '独立访客 (UV)', value: behavior?.uv || 0 },
+            { title: '总点击次数', value: behavior?.totalClicks || 0 },
+            {
+              title: '平均停留',
+              value: msToMinutes(behavior?.avgStay || 0),
+              suffix: 'min',
+              precision: 1,
+            },
+          ]}
+        />
+        <CombinedTrendChart
+          title="行为趋势"
+          data={daily}
+          loading={loading && !stats}
+          series={[
+            { name: 'PV', field: 'pv' },
+            { name: 'UV', field: 'uv' },
+            { name: '点击次数', field: 'clicks' },
+            {
+              name: '平均停留',
+              field: 'avgStay',
+              yAxisIndex: 1,
+              unit: 'min',
+              yAxisName: '时长(min)',
+              transform: msToMinutes,
+            },
+          ]}
+        />
+      </div>
     </Spin>
   );
 }

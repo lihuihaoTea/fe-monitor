@@ -3,9 +3,99 @@ body {
   margin: 0;
   padding: 0;
   min-height: 100%;
-  background: #f5f5f5;
+  background: #f0f2f5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 * {
   box-sizing: border-box;
 }
+
+.monitor-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* 看板卡片统一观感 */
+.monitor-card .ant-card-head {
+  min-height: 48px;
+  padding-inline: 20px;
+  border-bottom-color: rgba(5, 5, 5, 0.06);
+}
+
+.monitor-card .ant-card-head-title {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.monitor-card .ant-card-body {
+  padding: 16px 20px 20px;
+}
+
+.monitor-metric-tile {
+  height: 100%;
+  padding: 16px 12px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #fafbfc 0%, #f5f7fa 100%);
+  border: 1px solid rgba(5, 5, 5, 0.04);
+  text-align: center;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.monitor-metric-tile:hover {
+  border-color: color-mix(in srgb, var(--ant-color-primary) 35%, transparent);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--ant-color-primary) 10%, transparent);
+}
+
+.monitor-metric-tile .ant-statistic-title {
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.45);
+  margin-bottom: 8px;
+}
+
+.monitor-metric-tile .ant-statistic-content {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.monitor-table-card .ant-table-thead > tr > th {
+  background: #fafafa !important;
+  font-weight: 600;
+}
+
+.monitor-table-card .ant-table-tbody > tr > td {
+  padding-top: 10px !important;
+  padding-bottom: 10px !important;
+}
+
+/* 全局滚动条：覆盖所有可滚动 DOM（含 ant-table-body 等） */
+* {
+  scrollbar-width: thin; /* Firefox + Chromium */
+  scrollbar-color: #c0c0c0 transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #c0c0c0;
+  border-radius: 4px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: #8c8c8c;
+}
+

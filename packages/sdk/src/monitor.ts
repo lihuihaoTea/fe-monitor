@@ -1,5 +1,5 @@
 import type { MonitorConfig, MonitorEvent } from './types';
-import { getSessionId, getVisitorId, shouldSample } from './utils';
+import { getSessionId, getVisitorId, shouldSample, stringifyErrorValue } from './utils';
 import { ErrorCollector } from './collectors/error';
 import { ResourceCollector } from './collectors/resource';
 import { ApiCollector } from './collectors/api';
@@ -83,15 +83,19 @@ class Monitor {
     this.reporter.report(event);
   }
 
-  error(error: Error | string, extra?: any) {
+  error(error: Error | string | Record<string, unknown> | unknown, extra?: any) {
     if (!this.initialized || !this.reporter) {
       console.warn('[FE Monitor] Not initialized');
       return;
     }
 
+    const message = stringifyErrorValue(error);
+    // monitor.error('404') → 页面路由未找到
+    const isNotFound = message === '404';
+
     const event: MonitorEvent = {
       type: 'error',
-      subType: 'manual',
+      subType: isNotFound ? '404' : 'manual',
       timestamp: Date.now(),
       appId: this.config!.appId,
       sessionId: getSessionId(),
@@ -99,11 +103,14 @@ class Monitor {
       url: window.location.href,
       userAgent: navigator.userAgent,
       data: {
-        error: error instanceof Error ? {
-          name: error.name,
-          message: error.message,
-          stack: error.stack,
-        } : { message: String(error) },
+        message,
+        error: error instanceof Error
+          ? {
+              name: error.name,
+              message: error.message,
+              stack: error.stack,
+            }
+          : message,
         extra,
       },
     };
