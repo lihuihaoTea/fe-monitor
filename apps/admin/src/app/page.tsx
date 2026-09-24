@@ -29,7 +29,7 @@ export default function Home() {
   const fetchStats = async () => {
     setLoading(true);
     try {
-      const url = new URL('http://localhost:3100/api/stats');
+      const url = new URL('https://api.lihuihao.chat/api/stats');
       url.searchParams.set('appId', appId);
       url.searchParams.set('startDate', dateRange.start);
       url.searchParams.set('endDate', dateRange.end);

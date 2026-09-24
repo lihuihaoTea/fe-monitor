@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { db } from '../db/index.js';
 
-export const collectRouter = Router();
+export const reportRouter = Router();
 
 interface MonitorEvent {
   type: string;
@@ -35,7 +35,7 @@ function validateEvent(event: any): event is MonitorEvent {
   );
 }
 
-collectRouter.post('/', (req, res) => {
+reportRouter.post('/', (req, res) => {
   try {
     const { events } = req.body;
 
@@ -85,7 +85,7 @@ collectRouter.post('/', (req, res) => {
 
     res.json({ success: true, inserted });
   } catch (error) {
-    console.error('Collect error:', error);
+    console.error('Report error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

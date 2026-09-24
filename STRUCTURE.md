@@ -31,7 +31,7 @@ fe-monitor/
 │   │   │   │   ├── index.ts      # 数据库连接
 │   │   │   │   └── init.ts       # 数据库初始化脚本
 │   │   │   ├── routes/
-│   │   │   │   ├── collect.ts    # 数据收集路由
+│   │   │   │   ├── report.ts     # 数据上报路由
 │   │   │   │   └── stats.ts      # 统计查询路由
 │   │   │   └── index.ts          # Express 服务入口
 │   │   ├── data/

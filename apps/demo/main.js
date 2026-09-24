@@ -1,7 +1,7 @@
 import monitor from '@fe-monitor/sdk';
 
 monitor.init({
-  endpoint: 'http://localhost:3100/api/collect',
+  endpoint: 'https://api.lihuihao.chat/api/report',
   appId: 'demo-app',
   sampleRate: 1,
   debug: true,

@@ -1,5 +1,7 @@
 node_modules
 dist
+!packages/sdk/dist/
+!packages/sdk/dist/**
 .next
 .turbo
 *.log
@@ -9,3 +11,5 @@ dist
 *.sqlite
 *.db
 .pnpm-debug.log
+*.tgz
+packages/sdk/.npmrc

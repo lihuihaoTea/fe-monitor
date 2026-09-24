@@ -65,34 +65,27 @@ pnpm dev:demo
 
 - **演示页面**: http://localhost:3200
 - **管理后台**: http://localhost:3000
-- **数据 API**: http://localhost:3100
+- **数据 API**: https://api.lihuihao.chat
 
 ## 📖 SDK 使用方法
 
-### 安装
+### 安装（推荐，无需 CI）
 
-发布到 npm 后，其他项目可直接安装：
+仓库已提交 SDK 构建产物，业务项目直接依赖 Git 子目录即可，**不用再本地编译**：
 
 ```bash
-npm install @fe-monitor/sdk
-# 或
+pnpm add git+ssh://git@gitlab.sucoupon.com:lihuihao/fe-monitor.git#path:packages/sdk
+```
+
+其他方式：
+
+```bash
+# 安装本地/内网分发的 tgz（本仓库执行 pnpm pack:sdk 生成）
+pnpm add ./fe-monitor-sdk-1.0.0.tgz
+
+# 若已发布到 npm
 pnpm add @fe-monitor/sdk
-# 或
-yarn add @fe-monitor/sdk
 ```
-
-### 发布 SDK（GitHub Actions）
-
-1. 在 [npmjs.com](https://www.npmjs.com) 登录 → **Access Tokens** → 创建 **Automation** token（需能发布 `@fe-monitor` scope）
-2. 在仓库 **Settings → Secrets and variables → Actions** 新增 Secret，名称必须为 `NPM_TOKEN`，值为上一步的 token
-3. 更新 `packages/sdk/package.json` 中的 `version` 后提交，再打 tag 并推送：
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-也可在 Actions 页手动运行 **Publish SDK** workflow。若报 `ENEEDAUTH` /「缺少 Secrets.NPM_TOKEN」，说明 Secret 未配置或名称写错。
 
 ### 初始化
 
@@ -100,7 +93,7 @@ git push origin v1.0.0
 import monitor from '@fe-monitor/sdk';
 
 monitor.init({
-  endpoint: 'http://localhost:3100/api/collect',  // 数据上报地址
+  endpoint: 'https://api.lihuihao.chat/api/report',  // 数据上报地址
   appId: 'your-app-id',                          // 应用标识
   sampleRate: 1,                                  // 采样率 (0-1), 默认 1
   debug: false,                                   // 调试模式, 默认 false
@@ -194,7 +187,7 @@ monitor.track('button_click', {
 ### 数据上报
 
 ```
-POST /api/collect
+POST /api/report
 Content-Type: application/json
 
 {

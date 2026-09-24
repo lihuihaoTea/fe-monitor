@@ -8,6 +8,8 @@
     "dev:admin": "pnpm --filter @fe-monitor/admin dev",
     "dev:demo": "pnpm --filter @fe-monitor/demo dev",
     "build:sdk": "pnpm --filter @fe-monitor/sdk build",
+    "pack:sdk": "pnpm build:sdk && pnpm --filter @fe-monitor/sdk pack --pack-destination .",
+    "publish:sdk": "pnpm build:sdk && pnpm --filter @fe-monitor/sdk publish --access public --no-git-checks",
     "build:server": "pnpm --filter @fe-monitor/server build",
     "build:admin": "pnpm --filter @fe-monitor/admin build",
     "build": "pnpm build:sdk && pnpm build:server && pnpm build:admin",

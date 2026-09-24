@@ -1,10 +1,9 @@
-import type { MonitorConfig, MonitorEvent } from '../types';
-import { getSessionId, getVisitorId } from '../utils';
+import type { MonitorConfig, MonitorEvent } from './types';
 
 export class Reporter {
   private queue: MonitorEvent[] = [];
   private config: MonitorConfig;
-  private timer: any = null;
+  private timer: ReturnType<typeof setInterval> | null = null;
   private readonly maxQueueSize = 10;
   private readonly flushInterval = 5000;
 
