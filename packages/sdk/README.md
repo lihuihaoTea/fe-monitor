@@ -4,8 +4,12 @@
 
 ## 业务项目安装（推荐）
 
+仓库：`https://github.com/lihuihaoTea/fe-monitor`
+
 ```bash
-pnpm add git+ssh://git@gitlab.sucoupon.com:lihuihao/fe-monitor.git#path:packages/sdk
+pnpm add git+https://github.com/lihuihaoTea/fe-monitor.git#path:packages/sdk
+# 或 SSH
+pnpm add git+ssh://git@github.com:lihuihaoTea/fe-monitor.git#path:packages/sdk
 ```
 
 或在 `package.json`：
@@ -13,7 +17,7 @@ pnpm add git+ssh://git@gitlab.sucoupon.com:lihuihao/fe-monitor.git#path:packages
 ```json
 {
   "dependencies": {
-    "@fe-monitor/sdk": "git+ssh://git@gitlab.sucoupon.com:lihuihao/fe-monitor.git#path:packages/sdk"
+    "@fe-monitor/sdk": "git+https://github.com/lihuihaoTea/fe-monitor.git#path:packages/sdk"
   }
 }
 ```
@@ -21,7 +25,7 @@ pnpm add git+ssh://git@gitlab.sucoupon.com:lihuihao/fe-monitor.git#path:packages
 固定分支 / tag：
 
 ```bash
-pnpm add git+ssh://git@gitlab.sucoupon.com:lihuihao/fe-monitor.git#main&path:packages/sdk
+pnpm add git+https://github.com/lihuihaoTea/fe-monitor.git#main&path:packages/sdk
 ```
 
 ## 使用
