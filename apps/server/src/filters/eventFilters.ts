@@ -4,12 +4,17 @@ import { db } from '../db/index.js';
 export type EventFilterRow = {
   id: number;
   event_type: string;
-  match_type: 'host' | 'url_prefix' | string;
+  match_type: 'host' | 'url_prefix' | 'url_exact' | string;
   match_value: string;
   enabled: number;
   note: string | null;
   created_at: number;
 };
+
+export type FilterMatchType = 'host' | 'url_prefix' | 'url_exact';
+
+const MATCH_TYPES: FilterMatchType[] = ['host', 'url_prefix', 'url_exact'];
+
 
 const CACHE_TTL_MS = 10_000;
 let cachedRules: EventFilterRow[] = [];
@@ -52,7 +57,7 @@ export function listAllFilters(): EventFilterRow[] {
 
 export function addFilter(input: {
   eventType: string;
-  matchType: 'host' | 'url_prefix';
+  matchType: FilterMatchType;
   matchValue: string;
   note?: string;
 }): { ok: true; id: number } | { ok: false; error: string } {
@@ -62,8 +67,8 @@ export function addFilter(input: {
   if (!eventType || !matchValue) {
     return { ok: false, error: 'eventType / matchValue 不能为空' };
   }
-  if (matchType !== 'host' && matchType !== 'url_prefix') {
-    return { ok: false, error: 'matchType 仅支持 host | url_prefix' };
+  if (!MATCH_TYPES.includes(matchType)) {
+    return { ok: false, error: 'matchType 仅支持 host | url_prefix | url_exact' };
   }
 
   try {
@@ -139,6 +144,11 @@ function matchPrefix(url: string, prefix: string): boolean {
   return url.startsWith(prefix);
 }
 
+function matchExact(url: string, exact: string): boolean {
+  if (!url || !exact) return false;
+  return url === exact;
+}
+
 /** 写入数据库前判断是否应筛除（规则来自 event_filters 表） */
 export function shouldFilterEvent(event: { type?: string; data?: any }): boolean {
   const type = event.type || '';
@@ -153,6 +163,9 @@ export function shouldFilterEvent(event: { type?: string; data?: any }): boolean
     }
     if (rule.match_type === 'url_prefix') {
       return matchPrefix(targetUrl, rule.match_value);
+    }
+    if (rule.match_type === 'url_exact') {
+      return matchExact(targetUrl, rule.match_value);
     }
     return false;
   });

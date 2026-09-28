@@ -1,10 +1,11 @@
 /**
  * 按 event_filters 表清理历史脏数据。
+ * 支持 host / url_prefix / url_exact 规则（含 resource 完全匹配路径）。
  *
  * 用法：
- *   pnpm --filter @fe-monitor/server db:clean-filtered          # 实际删除
- *   pnpm --filter @fe-monitor/server db:clean-filtered -- --dry-run  # 仅预览
- *   pnpm --filter @fe-monitor/server db:clean-filtered -- --vacuum   # 删除后压缩库文件
+ *   pnpm db:clean-filtered -- --dry-run   # 仅预览
+ *   pnpm db:clean-filtered               # 实际删除
+ *   pnpm db:clean-filtered -- --vacuum   # 删除后压缩库文件
  */
 import { initDB, db } from './index.js';
 import { loadEnabledFilters, shouldFilterEvent } from '../filters/eventFilters.js';

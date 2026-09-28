@@ -5,6 +5,7 @@
  *   pnpm db:filters -- list
  *   pnpm db:filters -- add --type api --match host --value i.clarity.ms --note "Clarity"
  *   pnpm db:filters -- add --type resource --match url_prefix --value https://p26.douyinpic.com
+ *   pnpm db:filters -- add --type resource --match url_exact --value https://cdn.example.com/a.png
  *   pnpm db:filters -- disable --id 1
  *   pnpm db:filters -- enable --id 1
  *   pnpm db:filters -- remove --id 1
@@ -15,6 +16,7 @@ import {
   listAllFilters,
   removeFilter,
   setFilterEnabled,
+  type FilterMatchType,
 } from '../filters/eventFilters.js';
 
 function printHelp() {
@@ -22,17 +24,27 @@ function printHelp() {
 
 命令:
   list
-  add --type <api|resource|...> --match <host|url_prefix> --value <值> [--note <说明>]
+  add --type <api|resource|...> --match <host|url_prefix|url_exact> --value <值> [--note <说明>]
   disable --id <id>
   enable --id <id>
   remove --id <id>
+
+match 说明:
+  host        匹配 URL hostname（含子域），常用于 api
+  url_prefix  匹配 URL 前缀，常用于 resource CDN
+  url_exact   完全匹配整段 URL，常用于精确筛除某条资源路径
 
 示例:
   pnpm db:filters -- list
   pnpm db:filters -- add --type api --match host --value example.com --note "测试域名"
   pnpm db:filters -- add --type resource --match url_prefix --value https://cdn.example.com/
+  pnpm db:filters -- add --type resource --match url_exact --value https://cdn.example.com/static/logo.png
   pnpm db:filters -- disable --id 3
   pnpm db:filters -- remove --id 3
+
+清理历史命中数据:
+  pnpm db:clean-filtered -- --dry-run
+  pnpm db:clean-filtered
 `);
 }
 
@@ -87,7 +99,7 @@ function main() {
 
     if (cmd === 'add') {
       const eventType = requireFlag(args, '--type');
-      const match = requireFlag(args, '--match') as 'host' | 'url_prefix';
+      const match = requireFlag(args, '--match') as FilterMatchType;
       const value = requireFlag(args, '--value');
       const note = getFlag(args, '--note');
       const result = addFilter({
