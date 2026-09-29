@@ -18,11 +18,36 @@ export function StabilityDashboard() {
         <MetricSummary
           loading={listLoading}
           items={[
-            { title: 'JS 错误', value: errors?.total || 0 },
-            { title: '资源加载失败', value: stability?.resourceErrors || 0 },
-            { title: 'API 失败', value: stability?.apiErrors || 0 },
-            { title: '白屏次数', value: stability?.blankScreens || 0 },
-            { title: '其他问题', value: stability?.otherIssues || 0 },
+            {
+              title: 'JS 错误',
+              value: errors?.total || 0,
+              description:
+                '脚本运行时错误与未捕获 Promise 异常（js / promise），不含业务主动上报。',
+            },
+            {
+              title: '资源加载失败',
+              value: stability?.resourceErrors || 0,
+              description:
+                '图片、脚本、样式等静态资源加载失败次数，影响页面展示与功能可用性。',
+            },
+            {
+              title: 'API 失败',
+              value: stability?.apiErrors || 0,
+              description:
+                'XHR / Fetch 请求失败或异常状态次数，反映接口可用性与前后端联调问题。',
+            },
+            {
+              title: '白屏次数',
+              value: stability?.blankScreens || 0,
+              description:
+                '检测到页面长时间无有效内容渲染的次数，通常意味着严重渲染或启动失败。',
+            },
+            {
+              title: '其他问题',
+              value: stability?.otherIssues || 0,
+              description:
+                '业务通过 monitor.error 主动上报的问题（如 404、自定义异常），不含系统 JS 错误。',
+            },
           ]}
         />
 

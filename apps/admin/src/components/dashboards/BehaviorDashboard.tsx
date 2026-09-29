@@ -22,14 +22,31 @@ export function BehaviorDashboard() {
         <MetricSummary
           loading={loading && !stats}
           items={[
-            { title: '页面访问 (PV)', value: behavior?.pv || 0 },
-            { title: '独立访客 (UV)', value: behavior?.uv || 0 },
-            { title: '总点击次数', value: behavior?.totalClicks || 0 },
+            {
+              title: '页面访问 (PV)',
+              value: behavior?.pv || 0,
+              description:
+                'Page View：页面浏览次数，用户每次进入或刷新页面计为 1 次访问。',
+            },
+            {
+              title: '独立访客 (UV)',
+              value: behavior?.uv || 0,
+              description:
+                'Unique Visitor：按访客标识去重后的独立访问人数，同一访客多次访问只计 1。',
+            },
+            {
+              title: '总点击次数',
+              value: behavior?.totalClicks || 0,
+              description:
+                '统计周期内页面点击事件累计次数，用于衡量交互活跃程度。',
+            },
             {
               title: '平均停留',
               value: msToMinutes(behavior?.avgStay || 0),
               suffix: 'min',
               precision: 1,
+              description:
+                '用户单次访问的平均停留时长（离开页面前），反映页面粘性与内容吸引力。',
             },
           ]}
         />
