@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   Button,
   DatePicker,
@@ -47,7 +47,8 @@ const APP_SELECT_OPTIONS = APP_OPTIONS.map((opt) => ({
   ),
 }));
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+/** 上下布局：固定 Header，Content 独立滚动 */
+export function MainLayout() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { token } = theme.useToken();
@@ -65,8 +66,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <Layout style={{ minHeight: '100vh', background: token.colorBgLayout }}>
+    <Layout className="app-layout">
       <Header
+        className="app-header"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -77,8 +79,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           background: token.colorBgContainer,
           borderBottom: `1px solid ${token.colorBorderSecondary}`,
           boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
-          position: 'sticky',
-          top: 0,
           zIndex: 100,
         }}
       >
@@ -137,30 +137,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </Space>
       </Header>
 
-      <Content
-        style={{
-          padding: '20px 24px 32px',
-          maxWidth: 1360,
-          width: '100%',
-          margin: '0 auto',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'baseline',
-            justifyContent: 'space-between',
-            marginBottom: 16,
-          }}
-        >
-          <Typography.Title level={4} style={{ margin: 0, fontWeight: 600 }}>
-            {pageTitle}
-          </Typography.Title>
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-            {dateRange[0].format('YYYY-MM-DD')} ~ {dateRange[1].format('YYYY-MM-DD')}
-          </Typography.Text>
+      <Content className="app-content" style={{ background: token.colorBgLayout }}>
+        <div className="app-content-inner">
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'baseline',
+              justifyContent: 'space-between',
+              marginBottom: 16,
+            }}
+          >
+            <Typography.Title level={4} style={{ margin: 0, fontWeight: 600 }}>
+              {pageTitle}
+            </Typography.Title>
+            <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+              {dateRange[0].format('YYYY-MM-DD')} ~{' '}
+              {dateRange[1].format('YYYY-MM-DD')}
+            </Typography.Text>
+          </div>
+          <Outlet />
         </div>
-        {children}
       </Content>
     </Layout>
   );

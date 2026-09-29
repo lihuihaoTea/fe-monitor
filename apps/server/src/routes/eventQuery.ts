@@ -22,9 +22,15 @@ export const OTHER_ISSUE_SQL = `(
   )
 )`;
 
-export type EventCategory = 'js' | 'resource' | 'api' | 'other';
+export type EventCategory = 'js' | 'resource' | 'api' | 'other' | 'performance';
 
-export const EVENT_CATEGORIES: EventCategory[] = ['js', 'resource', 'api', 'other'];
+export const EVENT_CATEGORIES: EventCategory[] = [
+  'js',
+  'resource',
+  'api',
+  'other',
+  'performance',
+];
 
 export function categoryWhereSql(category: EventCategory): string {
   switch (category) {
@@ -36,6 +42,8 @@ export function categoryWhereSql(category: EventCategory): string {
       return `(type = 'api')`;
     case 'other':
       return OTHER_ISSUE_SQL;
+    case 'performance':
+      return `(type = 'performance')`;
     default:
       return '(1 = 0)';
   }
@@ -65,7 +73,15 @@ export const LATEST_LIMIT_OPTIONS = [20, 50, 100, 200] as const;
 export function parseLatestLimit(raw: unknown): number {
   const value = Array.isArray(raw) ? raw[0] : raw;
   const parsed = Number(value);
-  return (LATEST_LIMIT_OPTIONS as readonly number[]).includes(parsed) ? parsed : 20;
+  return (LATEST_LIMIT_OPTIONS as readonly number[]).includes(parsed) ? parsed : 50;
+}
+
+/** 页码从 1 起 */
+export function parsePage(raw: unknown): number {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return 1;
+  return Math.floor(parsed);
 }
 
 export function mapEventRow(row: {
@@ -104,6 +120,9 @@ export function mapEventRow(row: {
       [String(payload.apiUrl || payload.url || ''), status, err]
         .filter(Boolean)
         .join(' · ') || 'API 请求失败';
+  } else if (row.type === 'performance') {
+    const value = Number(payload.value);
+    message = Number.isFinite(value) ? `${Math.round(value)} ms` : '-';
   }
 
   return {
@@ -129,4 +148,5 @@ export const PRESET_SUB_TYPES: Record<EventCategory, string[]> = {
   resource: ['img', 'script', 'link', 'video', 'audio', 'source'],
   api: ['fetch', 'xhr'],
   other: ['manual', '404'],
+  performance: ['fcp', 'lcp', 'load', 'domReady'],
 };

@@ -1,16 +1,12 @@
-import { Card, Segmented, Space, Spin, Table, Typography } from 'antd';
+import { Card, Spin, Table } from 'antd';
 import { MetricSummary } from '@/components/MetricSummary';
 import { CombinedTrendChart } from '@/components/CombinedTrendChart';
 import { LatestErrorList } from '@/components/LatestErrorList';
-import {
-  LATEST_LIMIT_OPTIONS,
-  useFilters,
-  type LatestLimit,
-} from '@/context/FilterContext';
+import { useFilters } from '@/context/FilterContext';
 import { formatNumber } from '@/lib/format';
 
 export function StabilityDashboard() {
-  const { stats, loading, latestLimit, setLatestLimit } = useFilters();
+  const { stats, loading } = useFilters();
   const errors = stats?.errors;
   const stability = stats?.stability;
   const daily = stats?.daily || [];
@@ -43,32 +39,9 @@ export function StabilityDashboard() {
           ]}
         />
 
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            flexWrap: 'wrap',
-          }}
-        >
-          <Typography.Text type="secondary">最新错误列表</Typography.Text>
-          <Space size={8}>
-            <Typography.Text type="secondary">条数</Typography.Text>
-            <Segmented
-              value={latestLimit}
-              options={LATEST_LIMIT_OPTIONS.map((n) => ({
-                label: String(n),
-                value: n,
-              }))}
-              onChange={(value) => setLatestLimit(Number(value) as LatestLimit)}
-            />
-          </Space>
-        </div>
-
-        <LatestErrorList title="最新 JS 错误" category="js" />
-        <LatestErrorList title="最新资源失败" category="resource" />
-        <LatestErrorList title="最新 API 失败" category="api" />
+        <LatestErrorList title="JS 错误" category="js" />
+        <LatestErrorList title="资源加载失败" category="resource" />
+        <LatestErrorList title="API 失败" category="api" />
         <LatestErrorList title="其他问题" category="other" />
 
         <Card

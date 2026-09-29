@@ -3,30 +3,23 @@ import {
   Badge,
   Card,
   Input,
-  Select,
   Space,
   Table,
-  Tag,
   Typography,
   theme,
 } from 'antd';
 import type { TablePaginationConfig } from 'antd';
 import dayjs from 'dayjs';
-import { fetchEventSubTypes, fetchLatestEvents } from '@/lib/api';
-import type {
-  EventCategory,
-  LatestErrorItem,
-  SubTypeOption,
-} from '@/lib/types';
+import { fetchLatestEvents } from '@/lib/api';
+import type { LatestErrorItem } from '@/lib/types';
 import { useFilters } from '@/context/FilterContext';
+import { LIST_LIMIT_OPTIONS, type ListLimit } from '@/components/LatestErrorList';
 import { formatNumber } from '@/lib/format';
 
-export const LIST_LIMIT_OPTIONS = [20, 50, 100, 200] as const;
-export type ListLimit = (typeof LIST_LIMIT_OPTIONS)[number];
-
-interface LatestErrorListProps {
+interface PerformanceEventListProps {
   title: string;
-  category: EventCategory;
+  /** performance 事件的 sub_type：fcp | lcp | load | domReady */
+  metric: 'fcp' | 'lcp' | 'load' | 'domReady';
 }
 
 function CopyableText({ value, type }: { value?: string; type?: 'secondary' }) {
@@ -52,39 +45,33 @@ function formatUser(userName?: string, userId?: string) {
   return name || id;
 }
 
-export function LatestErrorList({ title, category }: LatestErrorListProps) {
+function metricValue(record: LatestErrorItem, metric: string): number | null {
+  const data = record.data || {};
+  if (metric === 'domReady') {
+    const v = Number(data.domReady ?? data.value);
+    return Number.isFinite(v) ? Math.round(v) : null;
+  }
+  const v = Number(data.value);
+  return Number.isFinite(v) ? Math.round(v) : null;
+}
+
+export function PerformanceEventList({ title, metric }: PerformanceEventListProps) {
   const { token } = theme.useToken();
   const { appId, dateRange } = useFilters();
 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<ListLimit>(50);
   const [total, setTotal] = useState(0);
-  const [subType, setSubType] = useState<string | undefined>();
-  const [messageKeyword, setMessageKeyword] = useState('');
   const [urlKeyword, setUrlKeyword] = useState('');
-  const [messageInput, setMessageInput] = useState('');
   const [urlInput, setUrlInput] = useState('');
-  const [typeOptions, setTypeOptions] = useState<SubTypeOption[]>([]);
   const [data, setData] = useState<LatestErrorItem[]>([]);
   const [loading, setLoading] = useState(false);
 
   const startDate = dateRange[0].format('YYYY-MM-DD');
   const endDate = dateRange[1].format('YYYY-MM-DD');
 
-  const loadTypes = useCallback(async () => {
-    try {
-      const options = await fetchEventSubTypes({
-        appId,
-        startDate,
-        endDate,
-        category,
-      });
-      setTypeOptions(options);
-    } catch (error) {
-      console.error(error);
-      setTypeOptions([]);
-    }
-  }, [appId, startDate, endDate, category]);
+  // DOM Ready 嵌在 load 上报里，按 load 拉取后取 data.domReady
+  const querySubType = metric === 'domReady' ? 'load' : metric;
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -93,11 +80,10 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
         appId,
         startDate,
         endDate,
-        category,
+        category: 'performance',
         page,
         limit: pageSize,
-        subType,
-        messageKeyword: messageKeyword || undefined,
+        subType: querySubType,
         urlKeyword: urlKeyword || undefined,
       });
       setData(result.list);
@@ -109,35 +95,19 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
     } finally {
       setLoading(false);
     }
-  }, [
-    appId,
-    startDate,
-    endDate,
-    category,
-    page,
-    pageSize,
-    subType,
-    messageKeyword,
-    urlKeyword,
-  ]);
-
-  useEffect(() => {
-    loadTypes();
-  }, [loadTypes]);
+  }, [appId, startDate, endDate, page, pageSize, querySubType, urlKeyword]);
 
   useEffect(() => {
     loadList();
   }, [loadList]);
 
-  // 关键词输入防抖；变更时回到第 1 页
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setMessageKeyword(messageInput.trim());
       setUrlKeyword(urlInput.trim());
       setPage(1);
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [messageInput, urlInput]);
+  }, [urlInput]);
 
   const pagination: TablePaginationConfig = {
     current: page,
@@ -149,11 +119,10 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
     showTotal: (t) => `共 ${formatNumber(t)} 条`,
     position: ['bottomCenter'],
     onChange: (nextPage, nextSize) => {
+      setPage(nextPage);
       if (nextSize && nextSize !== pageSize) {
         setPageSize(nextSize as ListLimit);
         setPage(1);
-      } else {
-        setPage(nextPage);
       }
     },
   };
@@ -199,33 +168,10 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
           </span>
 
           <Space wrap size={[16, 10]} style={{ justifyContent: 'flex-end' }}>
-            <Select
-              allowClear
-              placeholder="类型筛选"
-              style={{ width: 160 }}
-              value={subType}
-              options={typeOptions}
-              onChange={(value) => {
-                setSubType(value);
-                setPage(1);
-              }}
-            />
-            <Input.Search
-              allowClear
-              placeholder="信息关键词"
-              style={{ width: 220 }}
-              value={messageInput}
-              onChange={(e) => setMessageInput(e.target.value)}
-              onSearch={(value) => {
-                setMessageKeyword(value.trim());
-                setPage(1);
-              }}
-              enterButton
-            />
             <Input.Search
               allowClear
               placeholder="页面关键词"
-              style={{ width: 220 }}
+              style={{ width: 240 }}
               value={urlInput}
               onChange={(e) => setUrlInput(e.target.value)}
               onSearch={(value) => {
@@ -245,7 +191,7 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
         pagination={pagination}
         scroll={{ x: '100%', y: 300 }}
         tableLayout="fixed"
-        locale={{ emptyText: '暂无报错' }}
+        locale={{ emptyText: '暂无采样' }}
         dataSource={data}
         columns={[
           {
@@ -256,11 +202,13 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
               value ? dayjs(value).format('MM-DD HH:mm:ss') : '-',
           },
           {
-            title: '类型',
-            dataIndex: 'subType',
-            width: 90,
-            render: (value: string) =>
-              value ? <Tag bordered={false}>{value}</Tag> : '-',
+            title: '耗时',
+            key: 'value',
+            width: 120,
+            render: (_: unknown, record: LatestErrorItem) => {
+              const value = metricValue(record, metric);
+              return value == null ? '-' : `${formatNumber(value)} ms`;
+            },
           },
           {
             title: '用户',
@@ -280,16 +228,9 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
             },
           },
           {
-            title: '信息',
-            dataIndex: 'message',
-            width: 320,
-            ellipsis: true,
-            render: (value: string) => <CopyableText value={value} />,
-          },
-          {
             title: '页面',
             dataIndex: 'url',
-            width: 280,
+            width: 360,
             ellipsis: true,
             render: (value: string) => (
               <CopyableText value={value} type="secondary" />

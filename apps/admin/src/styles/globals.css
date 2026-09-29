@@ -1,15 +1,57 @@
 html,
-body {
+body,
+#root {
   margin: 0;
   padding: 0;
-  min-height: 100%;
+  height: 100%;
+  overflow: hidden;
   background: #f0f2f5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* 让 Router / ConfigProvider / AntApp 等中间层把高度传到布局 */
+#root,
+#root > *,
+.ant-app {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 * {
   box-sizing: border-box;
+}
+
+/* 上下布局：页面不滚动，仅 Header 下方 Content 滚动 */
+.app-layout.app-layout {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-header {
+  flex: none;
+}
+
+.app-content.app-content {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.app-content-inner {
+  padding: 20px 24px 32px;
+  max-width: 1360px;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .monitor-page {
@@ -85,6 +127,17 @@ body {
 .monitor-table-card .ant-table-tbody > tr > td {
   padding-top: 10px !important;
   padding-bottom: 10px !important;
+}
+
+.monitor-table-card .ant-table-pagination {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  margin: 12px 0 4px !important;
+}
+
+.monitor-table-card .ant-pagination {
+  justify-content: center;
 }
 
 /* 全局滚动条：覆盖所有可滚动 DOM（含 ant-table-body 等） */

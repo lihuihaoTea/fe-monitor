@@ -1,6 +1,7 @@
 import { Spin } from 'antd';
 import { MetricSummary } from '@/components/MetricSummary';
 import { CombinedTrendChart } from '@/components/CombinedTrendChart';
+import { PerformanceEventList } from '@/components/PerformanceEventList';
 import { useFilters } from '@/context/FilterContext';
 
 export function PerformanceDashboard() {
@@ -55,6 +56,11 @@ export function PerformanceDashboard() {
             { name: 'DOM Ready', field: 'domReady', unit: 'ms', precision: 0 },
           ]}
         />
+
+        <PerformanceEventList title="首次内容绘制 (FCP)" metric="fcp" />
+        <PerformanceEventList title="最大内容绘制 (LCP)" metric="lcp" />
+        <PerformanceEventList title="页面完整加载 (Load)" metric="load" />
+        <PerformanceEventList title="DOM 解析完成 (DOM Ready)" metric="domReady" />
       </div>
     </Spin>
   );

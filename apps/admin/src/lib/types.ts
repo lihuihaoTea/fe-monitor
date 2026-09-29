@@ -10,7 +10,7 @@ export interface LatestErrorItem {
   data?: Record<string, unknown>;
 }
 
-export type EventCategory = 'js' | 'resource' | 'api' | 'other';
+export type EventCategory = 'js' | 'resource' | 'api' | 'other' | 'performance';
 
 export interface StatsResponse {
   errors: {
@@ -57,6 +57,7 @@ export interface EventListQuery {
   startDate: string;
   endDate: string;
   category: EventCategory;
+  page?: number;
   limit?: number;
   subType?: string;
   messageKeyword?: string;
@@ -65,6 +66,7 @@ export interface EventListQuery {
 
 export interface EventListResponse {
   category: EventCategory;
+  page: number;
   limit: number;
   list: LatestErrorItem[];
   total: number;

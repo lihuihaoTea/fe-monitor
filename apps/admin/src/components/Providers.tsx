@@ -3,7 +3,6 @@ import zhCN from 'antd/locale/zh_CN';
 import dayjs from 'dayjs';
 import 'dayjs/locale/zh-cn';
 import { FilterProvider, useFilters } from '@/context/FilterContext';
-import { AppShell } from '@/components/AppShell';
 import { getAppThemeColor } from '@/lib/constants';
 
 dayjs.locale('zh-cn');
@@ -58,9 +57,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     >
       <AntApp>
         <FilterProvider>
-          <AppTheme>
-            <AppShell>{children}</AppShell>
-          </AppTheme>
+          <AppTheme>{children}</AppTheme>
         </FilterProvider>
       </AntApp>
     </ConfigProvider>

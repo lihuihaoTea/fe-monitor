@@ -53,6 +53,7 @@ export async function fetchLatestEvents(
   url.searchParams.set('startDate', params.startDate);
   url.searchParams.set('endDate', params.endDate);
   url.searchParams.set('category', params.category);
+  if (params.page) url.searchParams.set('page', String(params.page));
   if (params.limit) url.searchParams.set('limit', String(params.limit));
   if (params.subType) url.searchParams.set('subType', params.subType);
   if (params.messageKeyword) {
@@ -67,6 +68,7 @@ export async function fetchLatestEvents(
   const data = await res.json();
   return {
     category: data.category,
+    page: Number(data.page) || 1,
     limit: data.limit,
     total: data.total || 0,
     list: (data.list || []).map(normalizeLatestItem),
