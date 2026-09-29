@@ -9,7 +9,7 @@ fe-monitor/
 ├── packages/
 │   └── sdk/                 # fe-monitor-kit - 浏览器 SDK
 ├── apps/
-│   ├── server/             # @fe-monitor/server - 数据收集服务 (Express + SQLite)
+│   ├── server/             # @fe-monitor/server - 数据收集服务 (Express + PostgreSQL)
 │   ├── admin/              # @fe-monitor/admin - 管理后台 (Vite + React)
 │   └── demo/               # @fe-monitor/demo - 演示页面
 └── pnpm-workspace.yaml     # pnpm 工作区配置
@@ -21,11 +21,30 @@ fe-monitor/
 
 - Node.js >= 18
 - pnpm >= 8
+- Docker（本地 PostgreSQL，可选）
 
 ### 安装依赖
 
 ```bash
 pnpm install
+```
+
+### 启动 PostgreSQL
+
+```bash
+docker compose up -d
+```
+
+默认连接串：
+
+```
+postgresql://monitor:monitor@localhost:5432/fe_monitor
+```
+
+配置服务环境变量：
+
+```bash
+cp apps/server/.env.example apps/server/.env
 ```
 
 ### 初始化数据库
@@ -34,6 +53,7 @@ pnpm install
 pnpm db:init
 ```
 
+服务首次启动时也会自动建表并写入默认筛除规则。
 ### 构建 SDK
 
 ```bash
@@ -144,7 +164,7 @@ monitor.track("button_click", {
 ### 数据服务 (`apps/server`)
 
 - Express.js
-- better-sqlite3
+- PostgreSQL (`pg`)
 - TypeScript + tsx
 
 ### 管理后台 (`apps/admin`)
@@ -165,18 +185,18 @@ monitor.track("button_click", {
 
 | 字段       | 类型    | 说明                                                    |
 | ---------- | ------- | ------------------------------------------------------- |
-| id         | INTEGER | 主键                                                    |
+| id         | SERIAL  | 主键                                                    |
 | type       | TEXT    | 事件类型: error/resource/api/blank/performance/behavior |
 | sub_type   | TEXT    | 子类型                                                  |
-| timestamp  | INTEGER | 客户端时间戳                                            |
+| timestamp  | BIGINT  | 客户端时间戳（毫秒）                                      |
 | app_id     | TEXT    | 应用 ID                                                 |
 | session_id | TEXT    | 会话 ID                                                 |
 | visitor_id | TEXT    | 访客 ID                                                 |
 | url        | TEXT    | 页面 URL                                                |
 | user_agent | TEXT    | User Agent                                              |
 | client_ip  | TEXT    | 客户端 IP                                               |
-| data       | TEXT    | JSON 数据                                               |
-| created_at | INTEGER | 服务端接收时间                                          |
+| data       | JSONB   | 事件扩展数据                                              |
+| created_at | BIGINT  | 服务端接收时间（毫秒）                                    |
 
 ## 📊 API 接口
 
@@ -250,7 +270,7 @@ GET /api/stats?appId=demo-app&startDate=2024-01-01&endDate=2024-01-31
 
 ### 服务端特性
 
-- 🗄️ 轻量级 SQLite 数据库
+- 🗄️ PostgreSQL 持久化存储
 - 🚫 自动过滤爬虫请求
 - 🌐 CORS 支持 (本地开发)
 - 📊 丰富的统计 API
@@ -259,8 +279,8 @@ GET /api/stats?appId=demo-app&startDate=2024-01-01&endDate=2024-01-31
 ### 管理后台特性
 
 - 📱 响应式设计
-- 🎨 现代化 UI (Tailwind CSS)
-- 📈 可视化图表 (Recharts)
+- 🎨 现代化 UI (Ant Design)
+- 📈 可视化图表 (ECharts)
 - 📅 日期范围筛选
 - 🔄 实时数据刷新
 - 🇨🇳 中文界面
@@ -270,8 +290,8 @@ GET /api/stats?appId=demo-app&startDate=2024-01-01&endDate=2024-01-31
 1. **生产环境配置**
 
    - 修改 CORS 设置
-   - 使用环境变量管理配置
-   - 考虑使用 PostgreSQL/MySQL 替代 SQLite
+   - 通过 `DATABASE_URL` / `PORT` 等环境变量管理配置
+   - 为 PostgreSQL 配置备份与连接池上限
    - 添加认证和权限控制
 
 2. **性能优化**

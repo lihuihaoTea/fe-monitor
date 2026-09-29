@@ -10,7 +10,7 @@
  *   pnpm db:filters -- enable --id 1
  *   pnpm db:filters -- remove --id 1
  */
-import { initDB } from './index.js';
+import { initDB, closeDB } from './index.js';
 import {
   addFilter,
   listAllFilters,
@@ -61,12 +61,6 @@ function unescapeCliValue(raw: string): string {
   return raw.replace(/\\s/g, ' ').replace(/%20/g, ' ');
 }
 
-/**
- * 读取参数：
- * - --name value
- * - --name=value
- * - rest=true 时，收集到下一个 --xxx 之前的所有 token（中间空格用空格拼接）
- */
 function getFlag(
   args: string[],
   name: string,
@@ -113,8 +107,8 @@ function requireFlag(
   return value;
 }
 
-function printRows() {
-  const rows = listAllFilters();
+async function printRows() {
+  const rows = await listAllFilters();
   if (rows.length === 0) {
     console.log('（空）暂无筛除规则');
     return;
@@ -131,30 +125,29 @@ function printRows() {
   );
 }
 
-function main() {
-  initDB();
+async function main() {
+  await initDB();
 
   const args = process.argv.slice(2).filter((a) => a !== '--');
   const cmd = args[0];
 
-  if (!cmd || cmd === '-h' || cmd === '--help') {
-    printHelp();
-    return;
-  }
-
   try {
+    if (!cmd || cmd === '-h' || cmd === '--help') {
+      printHelp();
+      return;
+    }
+
     if (cmd === 'list') {
-      printRows();
+      await printRows();
       return;
     }
 
     if (cmd === 'add') {
       const eventType = requireFlag(args, '--type');
       const match = requireFlag(args, '--match') as FilterMatchType;
-      // value / note 支持空格：引号、--value=、\\s、%20，以及多 token 拼接
       const value = requireFlag(args, '--value', { rest: true });
       const note = getFlag(args, '--note', { rest: true });
-      const result = addFilter({
+      const result = await addFilter({
         eventType,
         matchType: match,
         matchValue: value,
@@ -162,11 +155,12 @@ function main() {
       });
       if (!result.ok) {
         console.error(result.error);
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       console.log(`已添加筛除项 id=${result.id}`);
       console.log(`match_value=${JSON.stringify(value)}`);
-      printRows();
+      await printRows();
       return;
     }
 
@@ -175,13 +169,14 @@ function main() {
       if (!Number.isFinite(id)) {
         throw new Error('--id 必须是数字');
       }
-      const result = setFilterEnabled(id, cmd === 'enable');
+      const result = await setFilterEnabled(id, cmd === 'enable');
       if (!result.ok) {
         console.error(result.error);
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       console.log(`已${cmd === 'enable' ? '启用' : '禁用'} id=${id}`);
-      printRows();
+      await printRows();
       return;
     }
 
@@ -190,23 +185,26 @@ function main() {
       if (!Number.isFinite(id)) {
         throw new Error('--id 必须是数字');
       }
-      const result = removeFilter(id);
+      const result = await removeFilter(id);
       if (!result.ok) {
         console.error(result.error);
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       console.log(`已删除 id=${id}`);
-      printRows();
+      await printRows();
       return;
     }
 
     console.error(`未知命令: ${cmd}`);
     printHelp();
-    process.exit(1);
+    process.exitCode = 1;
   } catch (err: any) {
     console.error(err?.message || err);
     printHelp();
-    process.exit(1);
+    process.exitCode = 1;
+  } finally {
+    await closeDB();
   }
 }
 

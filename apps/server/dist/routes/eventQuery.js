@@ -6,7 +6,7 @@ export const JS_ERROR_SQL = `(
 export const NOT_FOUND_SQL = `(
   type = 'error' AND (
     sub_type = '404'
-    OR CAST(json_extract(data, '$.message') AS TEXT) = '404'
+    OR (data->>'message') = '404'
   )
 )`;
 /**
@@ -62,7 +62,9 @@ export const LATEST_LIMIT_OPTIONS = [20, 50, 100, 200];
 export function parseLatestLimit(raw) {
     const value = Array.isArray(raw) ? raw[0] : raw;
     const parsed = Number(value);
-    return LATEST_LIMIT_OPTIONS.includes(parsed) ? parsed : 50;
+    return LATEST_LIMIT_OPTIONS.includes(parsed)
+        ? parsed
+        : 50;
 }
 /** 页码从 1 起 */
 export function parsePage(raw) {
@@ -72,14 +74,23 @@ export function parsePage(raw) {
         return 1;
     return Math.floor(parsed);
 }
+function parsePayload(data) {
+    if (data == null)
+        return {};
+    if (typeof data === 'object')
+        return data;
+    if (typeof data === 'string') {
+        try {
+            return JSON.parse(data);
+        }
+        catch {
+            return {};
+        }
+    }
+    return {};
+}
 export function mapEventRow(row) {
-    let payload = {};
-    try {
-        payload = row.data ? JSON.parse(row.data) : {};
-    }
-    catch {
-        payload = {};
-    }
+    const payload = parsePayload(row.data);
     let message = '';
     if (row.type === 'error') {
         if (row.sub_type === '404' || payload.message === '404') {
@@ -110,10 +121,10 @@ export function mapEventRow(row) {
         message = Number.isFinite(value) ? `${Math.round(value)} ms` : '-';
     }
     return {
-        id: row.id,
+        id: Number(row.id),
         type: row.type,
         subType: row.sub_type || '',
-        timestamp: row.timestamp || 0,
+        timestamp: Number(row.timestamp) || 0,
         url: row.url || '',
         message: String(message),
         userId: payload.user?.userId != null && payload.user?.userId !== ''

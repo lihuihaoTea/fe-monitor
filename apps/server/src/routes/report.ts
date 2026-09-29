@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db } from '../db/index.js';
+import { clientQuery, withTransaction } from '../db/index.js';
 import { shouldFilterEvent } from '../filters/eventFilters.js';
 
 export const reportRouter = Router();
@@ -18,10 +18,17 @@ interface MonitorEvent {
 
 function isBot(userAgent: string): boolean {
   const botPatterns = [
-    /bot/i, /spider/i, /crawler/i, /curl/i, /wget/i,
-    /python/i, /java/i, /http/i, /scraper/i
+    /bot/i,
+    /spider/i,
+    /crawler/i,
+    /curl/i,
+    /wget/i,
+    /python/i,
+    /java/i,
+    /http/i,
+    /scraper/i,
   ];
-  return botPatterns.some(pattern => pattern.test(userAgent));
+  return botPatterns.some((pattern) => pattern.test(userAgent));
 }
 
 function validateEvent(event: any): event is MonitorEvent {
@@ -36,7 +43,7 @@ function validateEvent(event: any): event is MonitorEvent {
   );
 }
 
-reportRouter.post('/', (req, res) => {
+reportRouter.post('/', async (req, res) => {
   try {
     const { events } = req.body;
 
@@ -44,50 +51,85 @@ reportRouter.post('/', (req, res) => {
       return res.status(400).json({ error: 'Invalid events' });
     }
 
-    const clientIp = req.headers['x-forwarded-for'] as string || 
-                     req.socket.remoteAddress || 
-                     'unknown';
-
-    const stmt = db.prepare(`
-      INSERT INTO events (
-        type, sub_type, timestamp, app_id, session_id, visitor_id,
-        url, user_agent, client_ip, data, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    const clientIp =
+      (req.headers['x-forwarded-for'] as string) ||
+      req.socket.remoteAddress ||
+      'unknown';
 
     const now = Date.now();
     let inserted = 0;
     let filtered = 0;
 
+    const toInsert: Array<{
+      type: string;
+      subType: string | null;
+      timestamp: number;
+      appId: string;
+      sessionId: string;
+      visitorId: string;
+      url: string;
+      userAgent: string;
+      clientIp: string;
+      data: string;
+      createdAt: number;
+    }> = [];
+
     for (const event of events) {
       if (!validateEvent(event)) continue;
-      
+
       const userAgent = event.userAgent || '';
       if (isBot(userAgent)) continue;
 
-      if (shouldFilterEvent(event)) {
+      if (await shouldFilterEvent(event)) {
         filtered++;
         continue;
       }
 
-      try {
-        stmt.run(
-          event.type,
-          event.subType || null,
-          event.timestamp,
-          event.appId,
-          event.sessionId,
-          event.visitorId,
-          event.url,
-          userAgent,
-          clientIp,
-          JSON.stringify(event.data),
-          now
-        );
-        inserted++;
-      } catch (err) {
-        console.error('Insert error:', err);
-      }
+      toInsert.push({
+        type: event.type,
+        subType: event.subType || null,
+        timestamp: event.timestamp,
+        appId: event.appId,
+        sessionId: event.sessionId,
+        visitorId: event.visitorId,
+        url: event.url,
+        userAgent,
+        clientIp,
+        data: JSON.stringify(event.data ?? {}),
+        createdAt: now,
+      });
+    }
+
+    if (toInsert.length > 0) {
+      await withTransaction(async (client) => {
+        for (const row of toInsert) {
+          try {
+            await clientQuery(
+              client,
+              `INSERT INTO events (
+                type, sub_type, timestamp, app_id, session_id, visitor_id,
+                url, user_agent, client_ip, data, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?)`,
+              [
+                row.type,
+                row.subType,
+                row.timestamp,
+                row.appId,
+                row.sessionId,
+                row.visitorId,
+                row.url,
+                row.userAgent,
+                row.clientIp,
+                row.data,
+                row.createdAt,
+              ]
+            );
+            inserted++;
+          } catch (err) {
+            console.error('Insert error:', err);
+          }
+        }
+      });
     }
 
     res.json({ success: true, inserted, filtered });

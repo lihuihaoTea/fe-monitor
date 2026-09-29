@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fe-monitor-postgres
+    restart: unless-stopped
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_USER: monitor
+      POSTGRES_PASSWORD: monitor
+      POSTGRES_DB: fe_monitor
+    volumes:
+      - fe_monitor_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U monitor -d fe_monitor']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  fe_monitor_pgdata:

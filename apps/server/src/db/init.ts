@@ -1,4 +1,5 @@
-import { initDB } from './index.js';
+import { initDB, closeDB } from './index.js';
 
-initDB();
+await initDB();
 console.log('Database tables created');
+await closeDB();

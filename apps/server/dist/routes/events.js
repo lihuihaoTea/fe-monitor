@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db } from '../db/index.js';
+import { query, queryOne } from '../db/index.js';
 import { EVENT_CATEGORIES, PRESET_SUB_TYPES, categoryWhereSql, mapEventRow, parseLatestLimit, parsePage, parseRangeBound, } from './eventQuery.js';
 export const eventsRouter = Router();
 function parseCategory(raw) {
@@ -16,26 +16,23 @@ function queryString(raw) {
 }
 const SORT_EXPRESSIONS = {
     timestamp: 'timestamp',
-    value: `CAST(json_extract(data, '$.value') AS REAL)`,
-    domReady: `CAST(json_extract(data, '$.domReady') AS REAL)`,
+    value: `(data->>'value')::float`,
+    domReady: `(data->>'domReady')::float`,
 };
 function parseSortClause(sortByRaw, sortOrderRaw) {
     const sortBy = queryString(sortByRaw);
     const expr = SORT_EXPRESSIONS[sortBy] || SORT_EXPRESSIONS.timestamp;
     const orderRaw = queryString(sortOrderRaw).toLowerCase();
-    // 与 antd SortOrder 一致：ascend / descend（兼容旧 asc / desc）
     const order = orderRaw === 'ascend' || orderRaw === 'asc' ? 'ASC' : 'DESC';
-    // 次级排序保证同耗时下顺序稳定
     if (expr === 'timestamp') {
         return `ORDER BY timestamp ${order}`;
     }
-    return `ORDER BY ${expr} ${order}, timestamp DESC`;
+    return `ORDER BY ${expr} ${order} NULLS LAST, timestamp DESC`;
 }
 /**
  * GET /api/events/sub-types
- * 某分类下的类型筛选项（库中 distinct + 预定义兜底）
  */
-eventsRouter.get('/sub-types', (req, res) => {
+eventsRouter.get('/sub-types', async (req, res) => {
     try {
         const { appId, startDate, endDate } = req.query;
         const category = parseCategory(req.query.category);
@@ -50,15 +47,13 @@ eventsRouter.get('/sub-types', (req, res) => {
         const start = parseRangeBound(startDate, 'start');
         const end = parseRangeBound(endDate, 'end');
         const whereCategory = categoryWhereSql(category);
-        const rows = db
-            .prepare(`SELECT DISTINCT sub_type as subType
-         FROM events
-         WHERE app_id = ? AND ${whereCategory}
-           AND timestamp >= ? AND timestamp <= ?
-           AND sub_type IS NOT NULL AND TRIM(sub_type) != ''
-         ORDER BY sub_type ASC`)
-            .all(appId, start, end);
-        const fromDb = rows.map((r) => r.subType).filter(Boolean);
+        const rows = await query(`SELECT DISTINCT sub_type as subtype
+       FROM events
+       WHERE app_id = ? AND ${whereCategory}
+         AND timestamp >= ? AND timestamp <= ?
+         AND sub_type IS NOT NULL AND TRIM(sub_type) != ''
+       ORDER BY subtype ASC`, [appId, start, end]);
+        const fromDb = rows.map((r) => r.subtype).filter(Boolean);
         const merged = Array.from(new Set([...PRESET_SUB_TYPES[category], ...fromDb]));
         res.json({
             category,
@@ -72,9 +67,8 @@ eventsRouter.get('/sub-types', (req, res) => {
 });
 /**
  * GET /api/events/latest
- * 单列表查询，支持类型 / 信息关键词 / 页面关键词
  */
-eventsRouter.get('/latest', (req, res) => {
+eventsRouter.get('/latest', async (req, res) => {
     try {
         const { appId, startDate, endDate, subType } = req.query;
         const category = parseCategory(req.query.category);
@@ -107,14 +101,13 @@ eventsRouter.get('/latest', (req, res) => {
             params.push(subTypeValue);
         }
         if (messageKeyword) {
-            // 信息列来源：error.message / resourceUrl / apiUrl 等，统一对 data + 展示字段模糊匹配
             conditions.push(`(
-        CAST(json_extract(data, '$.message') AS TEXT) LIKE ?
-        OR CAST(json_extract(data, '$.resourceUrl') AS TEXT) LIKE ?
-        OR CAST(json_extract(data, '$.apiUrl') AS TEXT) LIKE ?
-        OR CAST(json_extract(data, '$.error') AS TEXT) LIKE ?
-        OR CAST(json_extract(data, '$.statusText') AS TEXT) LIKE ?
-        OR CAST(data AS TEXT) LIKE ?
+        COALESCE(data->>'message', '') LIKE ?
+        OR COALESCE(data->>'resourceUrl', '') LIKE ?
+        OR COALESCE(data->>'apiUrl', '') LIKE ?
+        OR COALESCE(data->>'error', '') LIKE ?
+        OR COALESCE(data->>'statusText', '') LIKE ?
+        OR data::text LIKE ?
       )`);
             const like = `%${messageKeyword}%`;
             params.push(like, like, like, like, like, like);
@@ -125,21 +118,17 @@ eventsRouter.get('/latest', (req, res) => {
         }
         const whereSql = conditions.join(' AND ');
         const orderSql = parseSortClause(req.query.sortBy, req.query.sortOrder);
-        const totalRow = db
-            .prepare(`SELECT COUNT(*) as total FROM events WHERE ${whereSql}`)
-            .get(...params);
-        const rows = db
-            .prepare(`SELECT id, type, sub_type, timestamp, url, data
-         FROM events
-         WHERE ${whereSql}
-         ${orderSql}
-         LIMIT ${limit} OFFSET ${offset}`)
-            .all(...params);
+        const totalRow = await queryOne(`SELECT COUNT(*)::int as total FROM events WHERE ${whereSql}`, params);
+        const rows = await query(`SELECT id, type, sub_type, timestamp, url, data
+       FROM events
+       WHERE ${whereSql}
+       ${orderSql}
+       LIMIT ${limit} OFFSET ${offset}`, params);
         res.json({
             category,
             page,
             limit,
-            total: totalRow?.total ?? 0,
+            total: Number(totalRow?.total) || 0,
             filters: {
                 subType: subTypeValue || null,
                 messageKeyword: messageKeyword || null,
