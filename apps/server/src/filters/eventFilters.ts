@@ -119,34 +119,37 @@ function extractEventTargetUrl(event: {
   data?: any;
 }): string {
   const data = event.data || {};
+  let raw = '';
   if (event.type === 'api') {
-    return String(data.apiUrl || data.url || '');
+    raw = String(data.apiUrl || data.url || '');
+  } else if (event.type === 'resource') {
+    raw = String(data.resourceUrl || data.url || '');
   }
-  if (event.type === 'resource') {
-    return String(data.resourceUrl || data.url || '');
-  }
-  return '';
+  // 去掉首尾空白，避免 "https://qlydata.com/ " 与规则 "https://qlydata.com/" 对不上
+  return raw.trim();
 }
 
 function matchHost(url: string, host: string): boolean {
   if (!url || !host) return false;
   try {
     const hostname = new URL(url).hostname.toLowerCase();
-    const h = host.toLowerCase();
+    const h = host.trim().toLowerCase();
     return hostname === h || hostname.endsWith(`.${h}`);
   } catch {
-    return url.toLowerCase().includes(host.toLowerCase());
+    return url.toLowerCase().includes(host.trim().toLowerCase());
   }
 }
 
 function matchPrefix(url: string, prefix: string): boolean {
-  if (!url || !prefix) return false;
-  return url.startsWith(prefix);
+  const p = prefix.trim();
+  if (!url || !p) return false;
+  return url.startsWith(p);
 }
 
 function matchExact(url: string, exact: string): boolean {
-  if (!url || !exact) return false;
-  return url === exact;
+  const e = exact.trim();
+  if (!url || !e) return false;
+  return url === e;
 }
 
 /** 写入数据库前判断是否应筛除（规则来自 event_filters 表） */
