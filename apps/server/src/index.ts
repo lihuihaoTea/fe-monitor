@@ -3,6 +3,7 @@ import cors from 'cors';
 import { db, initDB } from './db/index.js';
 import { reportRouter } from './routes/report.js';
 import { statsRouter } from './routes/stats.js';
+import { eventsRouter } from './routes/events.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
@@ -30,6 +31,7 @@ initDB();
 
 app.use('/api/report', reportRouter);
 app.use('/api/stats', statsRouter);
+app.use('/api/events', eventsRouter);
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: Date.now() });

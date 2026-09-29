@@ -25,9 +25,18 @@ body {
   border-bottom-color: rgba(5, 5, 5, 0.06);
 }
 
+.monitor-card .ant-card-head-wrapper {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .monitor-card .ant-card-head-title {
   font-weight: 600;
   font-size: 15px;
+  flex: 1;
+  min-width: 0;
+  overflow: visible;
+  white-space: normal;
 }
 
 .monitor-card .ant-card-body {

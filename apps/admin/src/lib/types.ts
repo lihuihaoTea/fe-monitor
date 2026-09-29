@@ -10,6 +10,8 @@ export interface LatestErrorItem {
   data?: Record<string, unknown>;
 }
 
+export type EventCategory = 'js' | 'resource' | 'api' | 'other';
+
 export interface StatsResponse {
   errors: {
     total: number;
@@ -20,6 +22,7 @@ export interface StatsResponse {
     apiErrors: number;
     blankScreens: number;
     notFound404: number;
+    otherIssues: number;
   };
   performance: Record<string, number>;
   behavior: {
@@ -29,12 +32,6 @@ export interface StatsResponse {
     totalClicks: number;
   };
   daily: DailyPoint[];
-  latest: {
-    jsErrors: LatestErrorItem[];
-    resourceErrors: LatestErrorItem[];
-    apiErrors: LatestErrorItem[];
-    notFound404: LatestErrorItem[];
-  };
 }
 
 export interface DailyPoint {
@@ -46,10 +43,34 @@ export interface DailyPoint {
   apiErrors: number;
   blankScreens: number;
   notFound404: number;
+  otherIssues: number;
   fcp: number;
   lcp: number;
   load: number;
   domReady: number;
   avgStay: number;
   clicks: number;
+}
+
+export interface EventListQuery {
+  appId: string;
+  startDate: string;
+  endDate: string;
+  category: EventCategory;
+  limit?: number;
+  subType?: string;
+  messageKeyword?: string;
+  urlKeyword?: string;
+}
+
+export interface EventListResponse {
+  category: EventCategory;
+  limit: number;
+  list: LatestErrorItem[];
+  total: number;
+}
+
+export interface SubTypeOption {
+  value: string;
+  label: string;
 }

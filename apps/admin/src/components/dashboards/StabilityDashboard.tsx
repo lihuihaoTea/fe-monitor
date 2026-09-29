@@ -14,7 +14,6 @@ export function StabilityDashboard() {
   const errors = stats?.errors;
   const stability = stats?.stability;
   const daily = stats?.daily || [];
-  const latest = stats?.latest;
   const listLoading = loading && !stats;
 
   return (
@@ -27,7 +26,7 @@ export function StabilityDashboard() {
             { title: '资源加载失败', value: stability?.resourceErrors || 0 },
             { title: 'API 失败', value: stability?.apiErrors || 0 },
             { title: '白屏次数', value: stability?.blankScreens || 0 },
-            { title: '404', value: stability?.notFound404 || 0 },
+            { title: '其他问题', value: stability?.otherIssues || 0 },
           ]}
         />
 
@@ -40,7 +39,7 @@ export function StabilityDashboard() {
             { name: '资源失败', field: 'resourceErrors' },
             { name: 'API 失败', field: 'apiErrors' },
             { name: '白屏', field: 'blankScreens' },
-            { name: '404', field: 'notFound404' },
+            { name: '其他问题', field: 'otherIssues' },
           ]}
         />
 
@@ -67,29 +66,10 @@ export function StabilityDashboard() {
           </Space>
         </div>
 
-        <LatestErrorList
-          title="最新 JS 错误"
-          data={latest?.jsErrors || []}
-          loading={listLoading}
-        />
-
-        <LatestErrorList
-          title="最新资源失败"
-          data={latest?.resourceErrors || []}
-          loading={listLoading}
-        />
-
-        <LatestErrorList
-          title="最新 API 失败"
-          data={latest?.apiErrors || []}
-          loading={listLoading}
-        />
-
-        <LatestErrorList
-          title="最新 404"
-          data={latest?.notFound404 || []}
-          loading={listLoading}
-        />
+        <LatestErrorList title="最新 JS 错误" category="js" />
+        <LatestErrorList title="最新资源失败" category="resource" />
+        <LatestErrorList title="最新 API 失败" category="api" />
+        <LatestErrorList title="其他问题" category="other" />
 
         <Card
           className="monitor-card monitor-table-card"

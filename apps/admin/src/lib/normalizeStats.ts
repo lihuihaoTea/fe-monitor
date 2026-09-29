@@ -9,6 +9,7 @@ const EMPTY_DAILY: Omit<DailyPoint, 'date'> = {
   apiErrors: 0,
   blankScreens: 0,
   notFound404: 0,
+  otherIssues: 0,
   fcp: 0,
   lcp: 0,
   load: 0,
@@ -22,7 +23,10 @@ function toNumber(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-function normalizeDailyPoint(raw: Partial<DailyPoint> & { date?: string }, date: string): DailyPoint {
+function normalizeDailyPoint(
+  raw: Partial<DailyPoint> & { date?: string },
+  date: string
+): DailyPoint {
   return {
     date,
     pv: toNumber(raw.pv),
@@ -32,6 +36,7 @@ function normalizeDailyPoint(raw: Partial<DailyPoint> & { date?: string }, date:
     apiErrors: toNumber(raw.apiErrors),
     blankScreens: toNumber(raw.blankScreens),
     notFound404: toNumber(raw.notFound404),
+    otherIssues: toNumber(raw.otherIssues),
     fcp: toNumber(raw.fcp),
     lcp: toNumber(raw.lcp),
     load: toNumber(raw.load),
@@ -66,7 +71,7 @@ export function fillDailyRange(
   return result;
 }
 
-function normalizeLatestItem(item: Partial<LatestErrorItem>): LatestErrorItem {
+export function normalizeLatestItem(item: Partial<LatestErrorItem>): LatestErrorItem {
   return {
     id: toNumber(item.id),
     type: item.type || '',
@@ -100,6 +105,7 @@ export function normalizeStats(
       apiErrors: toNumber(raw?.stability?.apiErrors),
       blankScreens: toNumber(raw?.stability?.blankScreens),
       notFound404: toNumber(raw?.stability?.notFound404),
+      otherIssues: toNumber(raw?.stability?.otherIssues),
     },
     performance: {
       fcp: toNumber(performanceRaw.fcp),
@@ -114,12 +120,6 @@ export function normalizeStats(
       totalClicks: toNumber(raw?.behavior?.totalClicks),
     },
     daily: fillDailyRange(raw?.daily, start, end),
-    latest: {
-      jsErrors: (raw?.latest?.jsErrors || []).map(normalizeLatestItem),
-      resourceErrors: (raw?.latest?.resourceErrors || []).map(normalizeLatestItem),
-      apiErrors: (raw?.latest?.apiErrors || []).map(normalizeLatestItem),
-      notFound404: (raw?.latest?.notFound404 || []).map(normalizeLatestItem),
-    },
   };
 }
 

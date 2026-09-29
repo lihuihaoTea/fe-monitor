@@ -51,7 +51,6 @@ function FilterProviderInner({ children }: { children: ReactNode }) {
         appId,
         startDate: dateRange[0].format('YYYY-MM-DD'),
         endDate: dateRange[1].format('YYYY-MM-DD'),
-        latestLimit,
       });
       setStats(normalizeStats(data, dateRange[0], dateRange[1]));
     } catch (error) {
@@ -61,7 +60,7 @@ function FilterProviderInner({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, [appId, dateRange, latestLimit, message]);
+  }, [appId, dateRange, message]);
 
   useEffect(() => {
     refresh();
