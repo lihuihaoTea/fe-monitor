@@ -53,16 +53,17 @@ statsRouter.get('/', async (req, res) => {
          AND timestamp >= ? AND timestamp <= ?`, rangeParams);
         const uvCount = await queryOne(`SELECT COUNT(DISTINCT client_ip)::int as count FROM events
        WHERE app_id = ? AND timestamp >= ? AND timestamp <= ?`, rangeParams);
+        // 驼峰别名必须双引号，否则 pg 会折成小写（resourceErrors → resourceerrors）
         const dailyRows = await query(`SELECT
           to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD') as date,
           COUNT(CASE WHEN type = 'behavior' AND sub_type = 'pv' THEN 1 END)::int as pv,
           COUNT(DISTINCT CASE WHEN type = 'behavior' AND sub_type = 'pv' THEN visitor_id END)::int as uv,
           COUNT(CASE WHEN ${JS_ERROR_SQL} THEN 1 END)::int as errors,
-          COUNT(CASE WHEN type = 'resource' THEN 1 END)::int as resourceErrors,
-          COUNT(CASE WHEN type = 'api' THEN 1 END)::int as apiErrors,
-          COUNT(CASE WHEN type = 'blank' THEN 1 END)::int as blankScreens,
-          COUNT(CASE WHEN ${NOT_FOUND_SQL} THEN 1 END)::int as notFound404,
-          COUNT(CASE WHEN ${OTHER_ISSUE_SQL} THEN 1 END)::int as otherIssues,
+          COUNT(CASE WHEN type = 'resource' THEN 1 END)::int as "resourceErrors",
+          COUNT(CASE WHEN type = 'api' THEN 1 END)::int as "apiErrors",
+          COUNT(CASE WHEN type = 'blank' THEN 1 END)::int as "blankScreens",
+          COUNT(CASE WHEN ${NOT_FOUND_SQL} THEN 1 END)::int as "notFound404",
+          COUNT(CASE WHEN ${OTHER_ISSUE_SQL} THEN 1 END)::int as "otherIssues",
           AVG(CASE WHEN type = 'performance' AND sub_type = 'fcp'
             THEN (data->>'value')::float END) as fcp,
           AVG(CASE WHEN type = 'performance' AND sub_type = 'lcp'
@@ -70,9 +71,9 @@ statsRouter.get('/', async (req, res) => {
           AVG(CASE WHEN type = 'performance' AND sub_type = 'load'
             THEN (data->>'value')::float END) as load,
           AVG(CASE WHEN type = 'performance' AND sub_type = 'load'
-            THEN (data->>'domReady')::float END) as domReady,
+            THEN (data->>'domReady')::float END) as "domReady",
           AVG(CASE WHEN type = 'behavior' AND sub_type = 'stay'
-            THEN (data->>'duration')::float END) as avgStay,
+            THEN (data->>'duration')::float END) as "avgStay",
           COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
             THEN (data->>'clickCount')::int ELSE 0 END), 0)::int as clicks
         FROM events
@@ -80,22 +81,23 @@ statsRouter.get('/', async (req, res) => {
         GROUP BY to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')
         ORDER BY date ASC
         LIMIT 90`, rangeParams);
+        const num = (row, key) => Number(row[key] ?? row[key.toLowerCase()]) || 0;
         const dailyStats = dailyRows.map((row) => ({
             date: row.date,
-            pv: Number(row.pv) || 0,
-            uv: Number(row.uv) || 0,
-            errors: Number(row.errors) || 0,
-            resourceErrors: Number(row.resourceErrors) || 0,
-            apiErrors: Number(row.apiErrors) || 0,
-            blankScreens: Number(row.blankScreens) || 0,
-            notFound404: Number(row.notFound404) || 0,
-            otherIssues: Number(row.otherIssues) || 0,
-            fcp: Math.round(Number(row.fcp) || 0),
-            lcp: Math.round(Number(row.lcp) || 0),
-            load: Math.round(Number(row.load) || 0),
-            domReady: Math.round(Number(row.domReady) || 0),
-            avgStay: Math.round(Number(row.avgStay) || 0),
-            clicks: Number(row.clicks) || 0,
+            pv: num(row, 'pv'),
+            uv: num(row, 'uv'),
+            errors: num(row, 'errors'),
+            resourceErrors: num(row, 'resourceErrors'),
+            apiErrors: num(row, 'apiErrors'),
+            blankScreens: num(row, 'blankScreens'),
+            notFound404: num(row, 'notFound404'),
+            otherIssues: num(row, 'otherIssues'),
+            fcp: Math.round(num(row, 'fcp')),
+            lcp: Math.round(num(row, 'lcp')),
+            load: Math.round(num(row, 'load')),
+            domReady: Math.round(num(row, 'domReady')),
+            avgStay: Math.round(num(row, 'avgStay')),
+            clicks: num(row, 'clicks'),
         }));
         const n = (v) => Number(v) || 0;
         res.json({
