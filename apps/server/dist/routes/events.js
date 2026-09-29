@@ -22,7 +22,9 @@ const SORT_EXPRESSIONS = {
 function parseSortClause(sortByRaw, sortOrderRaw) {
     const sortBy = queryString(sortByRaw);
     const expr = SORT_EXPRESSIONS[sortBy] || SORT_EXPRESSIONS.timestamp;
-    const order = queryString(sortOrderRaw).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    const orderRaw = queryString(sortOrderRaw).toLowerCase();
+    // 与 antd SortOrder 一致：ascend / descend（兼容旧 asc / desc）
+    const order = orderRaw === 'ascend' || orderRaw === 'asc' ? 'ASC' : 'DESC';
     // 次级排序保证同耗时下顺序稳定
     if (expr === 'timestamp') {
         return `ORDER BY timestamp ${order}`;
