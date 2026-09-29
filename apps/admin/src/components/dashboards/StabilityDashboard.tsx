@@ -7,6 +7,7 @@ import {
   useFilters,
   type LatestLimit,
 } from '@/context/FilterContext';
+import { formatNumber } from '@/lib/format';
 
 export function StabilityDashboard() {
   const { stats, loading, latestLimit, setLatestLimit } = useFilters();
@@ -105,7 +106,12 @@ export function StabilityDashboard() {
             dataSource={errors?.byType || []}
             columns={[
               { title: '错误类型', dataIndex: 'sub_type', width: 480, ellipsis: true },
-              { title: '次数', dataIndex: 'count', width: 120 },
+              {
+                title: '次数',
+                dataIndex: 'count',
+                width: 120,
+                render: (value: number) => formatNumber(value),
+              },
             ]}
             locale={{ emptyText: '暂无数据' }}
           />

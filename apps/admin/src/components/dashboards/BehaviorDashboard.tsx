@@ -47,6 +47,7 @@ export function BehaviorDashboard() {
               yAxisIndex: 1,
               unit: 'min',
               yAxisName: '时长(min)',
+              precision: 1,
               transform: msToMinutes,
             },
           ]}

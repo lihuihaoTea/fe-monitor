@@ -406,20 +406,55 @@ var BehaviorCollector = class {
 };
 
 // src/reporter.ts
+var USER_TAG_STORAGE_KEY = "fe_monitor_user_tag";
 var Reporter = class {
   constructor(config) {
     this.queue = [];
     this.timer = null;
     this.maxQueueSize = 10;
     this.flushInterval = 5e3;
+    this.userTag = null;
     this.config = config;
+    this.userTag = this.readStoredUserTag();
     this.bindUnload();
     this.startTimer();
   }
-  report(event) {
-    this.queue.push(event);
+  setUser(user) {
+    const userId = user?.userId;
+    const userName = String(user?.userName ?? "").trim();
+    if (userId == null || userId === "" || !userName) {
+      if (this.config.debug) {
+        console.warn("[FE Monitor] setUser requires userId and userName");
+      }
+      return;
+    }
+    this.userTag = { userId, userName };
+    try {
+      sessionStorage.setItem(USER_TAG_STORAGE_KEY, JSON.stringify(this.userTag));
+    } catch {
+    }
     if (this.config.debug) {
-      console.log("[FE Monitor] Event:", event);
+      console.log("[FE Monitor] User tagged", this.userTag);
+    }
+  }
+  clearUser() {
+    this.userTag = null;
+    try {
+      sessionStorage.removeItem(USER_TAG_STORAGE_KEY);
+    } catch {
+    }
+    if (this.config.debug) {
+      console.log("[FE Monitor] User tag cleared");
+    }
+  }
+  getUser() {
+    return this.userTag;
+  }
+  report(event) {
+    const enriched = this.enrichWithUser(event);
+    this.queue.push(enriched);
+    if (this.config.debug) {
+      console.log("[FE Monitor] Event:", enriched);
     }
     if (this.queue.length >= this.maxQueueSize) {
       this.flush();
@@ -430,6 +465,24 @@ var Reporter = class {
     const events = [...this.queue];
     this.queue = [];
     this.send(events);
+  }
+  enrichWithUser(event) {
+    if (!this.userTag) return event;
+    const data = event.data && typeof event.data === "object" && !Array.isArray(event.data) ? { ...event.data } : { value: event.data };
+    data.user = { ...this.userTag };
+    return { ...event, data };
+  }
+  readStoredUserTag() {
+    try {
+      const raw = sessionStorage.getItem(USER_TAG_STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (parsed && (typeof parsed.userId === "string" || typeof parsed.userId === "number") && typeof parsed.userName === "string" && parsed.userName) {
+        return { userId: parsed.userId, userName: parsed.userName };
+      }
+    } catch {
+    }
+    return null;
   }
   send(events) {
     const url = this.config.endpoint;
@@ -511,6 +564,25 @@ var Monitor = class {
       new BehaviorCollector(this.config, this.reporter)
     ];
     this.collectors.forEach((collector) => collector.install());
+  }
+  /** 登录后标记用户，后续上报事件的 data.user 会带上该信息 */
+  setUser(user) {
+    if (!this.reporter) {
+      console.warn("[FE Monitor] Not initialized");
+      return;
+    }
+    this.reporter.setUser(user);
+  }
+  /** 退出登录后清除用户标记 */
+  clearUser() {
+    if (!this.reporter) {
+      console.warn("[FE Monitor] Not initialized");
+      return;
+    }
+    this.reporter.clearUser();
+  }
+  getUser() {
+    return this.reporter?.getUser() ?? null;
   }
   track(eventType, data) {
     if (!this.initialized || !this.reporter) {

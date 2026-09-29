@@ -74,6 +74,8 @@ function normalizeLatestItem(item: Partial<LatestErrorItem>): LatestErrorItem {
     timestamp: toNumber(item.timestamp),
     url: item.url || '',
     message: item.message || '-',
+    userId: item.userId ? String(item.userId) : '',
+    userName: item.userName ? String(item.userName) : '',
     data: item.data,
   };
 }

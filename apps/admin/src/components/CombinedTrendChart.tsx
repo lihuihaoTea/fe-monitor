@@ -4,6 +4,7 @@ import { Card, theme } from 'antd';
 import type { EChartsOption } from 'echarts';
 import type { DailyPoint } from '@/lib/types';
 import { CHART_PALETTE } from '@/lib/chartColors';
+import { formatNumberOrDash } from '@/lib/format';
 
 export type CombinedSeries = {
   name: string;
@@ -13,6 +14,8 @@ export type CombinedSeries = {
   unit?: string;
   /** 右侧 Y 轴名称，缺省取 unit */
   yAxisName?: string;
+  /** tooltip 小数位数 */
+  precision?: number;
   /** 原始值转换（如 ms → min） */
   transform?: (value: number) => number;
 };
@@ -34,7 +37,10 @@ export function CombinedTrendChart({
 }: CombinedTrendChartProps) {
   const { token } = theme.useToken();
   const seriesKey = series
-    .map((s) => `${s.name}:${s.field}:${s.yAxisIndex ?? 0}:${s.unit ?? ''}:${s.yAxisName ?? ''}`)
+    .map(
+      (s) =>
+        `${s.name}:${s.field}:${s.yAxisIndex ?? 0}:${s.unit ?? ''}:${s.yAxisName ?? ''}:${s.precision ?? ''}`
+    )
     .join('|');
 
   const option = useMemo<EChartsOption>(() => {
@@ -47,6 +53,7 @@ export function CombinedTrendChart({
 
     const axisLabelColor = token.colorTextTertiary;
     const splitLineColor = token.colorSplit;
+    const axisValueFormatter = (value: number) => formatNumberOrDash(value);
 
     return {
       color: [...CHART_PALETTE],
@@ -58,6 +65,7 @@ export function CombinedTrendChart({
         borderWidth: 1,
         textStyle: { color: token.colorText, fontSize: 12 },
         extraCssText: 'box-shadow: 0 6px 16px rgba(0,0,0,0.08); border-radius: 8px;',
+        valueFormatter: (value) => formatNumberOrDash(value),
       },
       legend: {
         type: 'scroll',
@@ -91,7 +99,11 @@ export function CombinedTrendChart({
               name: '次数',
               min: 0,
               nameTextStyle: { color: axisLabelColor, fontSize: 11, padding: [0, 0, 0, 8] },
-              axisLabel: { color: axisLabelColor, fontSize: 11 },
+              axisLabel: {
+                color: axisLabelColor,
+                fontSize: 11,
+                formatter: axisValueFormatter,
+              },
               splitLine: { lineStyle: { color: splitLineColor, type: 'dashed' } },
             },
             {
@@ -99,14 +111,22 @@ export function CombinedTrendChart({
               name: rightAxisName,
               min: 0,
               nameTextStyle: { color: axisLabelColor, fontSize: 11 },
-              axisLabel: { color: axisLabelColor, fontSize: 11 },
+              axisLabel: {
+                color: axisLabelColor,
+                fontSize: 11,
+                formatter: axisValueFormatter,
+              },
               splitLine: { show: false },
             },
           ]
         : {
             type: 'value',
             min: 0,
-            axisLabel: { color: axisLabelColor, fontSize: 11 },
+            axisLabel: {
+              color: axisLabelColor,
+              fontSize: 11,
+              formatter: axisValueFormatter,
+            },
             splitLine: { lineStyle: { color: splitLineColor, type: 'dashed' } },
           },
       series: series.map((s) => ({
@@ -123,18 +143,13 @@ export function CombinedTrendChart({
           return Number.isFinite(value) ? value : 0;
         }),
         emphasis: { focus: 'series' as const },
-        ...(s.unit
-          ? {
-              tooltip: {
-                valueFormatter: (value: unknown) => {
-                  if (value == null || value === '') return '-';
-                  const num = typeof value === 'number' ? value : Number(value);
-                  const shown = Number.isFinite(num) ? num.toFixed(1) : value;
-                  return `${shown} ${s.unit}`;
-                },
-              },
-            }
-          : {}),
+        tooltip: {
+          valueFormatter: (value: unknown) =>
+            formatNumberOrDash(value, {
+              precision: s.precision ?? (s.unit ? 1 : undefined),
+              unit: s.unit,
+            }),
+        },
       })),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

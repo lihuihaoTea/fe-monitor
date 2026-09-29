@@ -5,6 +5,8 @@ export interface LatestErrorItem {
   timestamp: number;
   url: string;
   message: string;
+  userId?: string;
+  userName?: string;
   data?: Record<string, unknown>;
 }
 

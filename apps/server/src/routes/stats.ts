@@ -234,6 +234,12 @@ statsRouter.get('/', (req, res) => {
           timestamp: row.timestamp || 0,
           url: row.url || '',
           message: String(message),
+          userId:
+            payload.user?.userId != null && payload.user?.userId !== ''
+              ? String(payload.user.userId)
+              : '',
+          userName:
+            typeof payload.user?.userName === 'string' ? payload.user.userName : '',
           data: payload,
         };
       });

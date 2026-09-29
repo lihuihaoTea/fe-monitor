@@ -26,6 +26,12 @@ monitor.init({
 
 monitor.error(new Error('自定义错误'));
 monitor.track('button_click', { name: '提交' });
+
+// 登录后标记用户（后续日志 data.user 自动带上）
+monitor.setUser({ userId: '10001', userName: '张三' });
+
+// 退出登录后清除标记
+monitor.clearUser();
 ```
 
 ## License

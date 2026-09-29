@@ -1,4 +1,4 @@
-import type { MonitorConfig, MonitorEvent } from './types';
+import type { MonitorConfig, MonitorEvent, UserTag } from './types';
 import { getSessionId, getVisitorId, shouldSample, stringifyErrorValue } from './utils';
 import { ErrorCollector } from './collectors/error';
 import { ResourceCollector } from './collectors/resource';
@@ -59,7 +59,29 @@ class Monitor {
       new BehaviorCollector(this.config, this.reporter),
     ];
 
-    this.collectors.forEach(collector => collector.install());
+    this.collectors.forEach((collector) => collector.install());
+  }
+
+  /** 登录后标记用户，后续上报事件的 data.user 会带上该信息 */
+  setUser(user: UserTag) {
+    if (!this.reporter) {
+      console.warn('[FE Monitor] Not initialized');
+      return;
+    }
+    this.reporter.setUser(user);
+  }
+
+  /** 退出登录后清除用户标记 */
+  clearUser() {
+    if (!this.reporter) {
+      console.warn('[FE Monitor] Not initialized');
+      return;
+    }
+    this.reporter.clearUser();
+  }
+
+  getUser(): UserTag | null {
+    return this.reporter?.getUser() ?? null;
   }
 
   track(eventType: string, data: any) {
@@ -119,7 +141,7 @@ class Monitor {
   }
 
   destroy() {
-    this.collectors.forEach(collector => {
+    this.collectors.forEach((collector) => {
       if (collector.uninstall) collector.uninstall();
     });
     if (this.reporter) {
@@ -133,4 +155,4 @@ const monitor = new Monitor();
 
 export default monitor;
 export { monitor };
-export type { MonitorConfig, MonitorEvent };
+export type { MonitorConfig, MonitorEvent, UserTag };

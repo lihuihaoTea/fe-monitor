@@ -1,12 +1,14 @@
-
-import { Card, Col, Row, Statistic } from 'antd';
+import { Card, Col, Row, Statistic, Typography } from 'antd';
 import { chartColorAt } from '@/lib/chartColors';
+import { formatNumber } from '@/lib/format';
 
 export interface SummaryItem {
   title: string;
   value: number | string;
   suffix?: string;
   precision?: number;
+  /** 指标说明文案 */
+  description?: string;
   /** 覆盖默认调色盘颜色（一般不需要） */
   color?: string;
 }
@@ -50,11 +52,22 @@ export function MetricSummary({
               <div className="monitor-metric-tile">
                 <Statistic
                   title={item.title}
-                  value={value}
+                  value={typeof value === 'number' ? value : Number(value) || 0}
                   suffix={item.suffix}
-                  precision={item.precision}
                   valueStyle={{ color: item.color || chartColorAt(index) }}
+                  formatter={(val) =>
+                    formatNumber(Number(val), { precision: item.precision })
+                  }
                 />
+                {item.description ? (
+                  <Typography.Paragraph
+                    type="secondary"
+                    ellipsis={{ rows: 2, tooltip: item.description }}
+                    className="monitor-metric-desc"
+                  >
+                    {item.description}
+                  </Typography.Paragraph>
+                ) : null}
               </div>
             </Col>
           );

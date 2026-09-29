@@ -61,6 +61,13 @@ body {
   line-height: 1.2;
 }
 
+.monitor-metric-desc {
+  margin: 10px 0 0 !important;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+}
+
 .monitor-table-card .ant-table-thead > tr > th {
   background: #fafafa !important;
   font-weight: 600;
