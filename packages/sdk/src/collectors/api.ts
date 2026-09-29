@@ -1,6 +1,7 @@
 import type { MonitorConfig, MonitorEvent } from '../types';
 import { getSessionId, getVisitorId, stringifyErrorValue } from '../utils';
 import type { Reporter } from '../reporter';
+import { FE_MONITOR_API_REPORTED } from './error';
 
 export class ApiCollector {
   private config: MonitorConfig;
@@ -28,7 +29,8 @@ export class ApiCollector {
       const startTime = Date.now();
       const url = args[0];
 
-      return self.originalFetch.apply(this, args as any)
+      return self.originalFetch
+        .apply(this, args as any)
         .then((response) => {
           if (response.status >= 400) {
             self.reportApiError('fetch', url, {
@@ -44,6 +46,7 @@ export class ApiCollector {
             error: error?.message || stringifyErrorValue(error),
             duration: Date.now() - startTime,
           });
+          self.markApiReported(error);
           throw error;
         });
     };
@@ -52,19 +55,30 @@ export class ApiCollector {
   private interceptXHR() {
     const self = this;
 
-    XMLHttpRequest.prototype.open = function (method: string, url: string, ...rest: any[]) {
+    XMLHttpRequest.prototype.open = function (
+      method: string,
+      url: string,
+      ...rest: any[]
+    ) {
       (this as any).__fe_monitor_url__ = url;
       (this as any).__fe_monitor_start__ = Date.now();
       return self.originalXHROpen.apply(this, [method, url, ...rest]);
     };
 
     XMLHttpRequest.prototype.send = function (...args: any[]) {
+      // 避免同一 XHR 多次 send 叠加监听
+      if ((this as any).__fe_monitor_bound__) {
+        return self.originalXHRSend.apply(this, args);
+      }
+      (this as any).__fe_monitor_bound__ = true;
+
       this.addEventListener('loadend', function () {
         if (this.status >= 400) {
           self.reportApiError('xhr', (this as any).__fe_monitor_url__, {
             status: this.status,
             statusText: this.statusText,
-            duration: Date.now() - ((this as any).__fe_monitor_start__ || Date.now()),
+            duration:
+              Date.now() - ((this as any).__fe_monitor_start__ || Date.now()),
           });
         }
       });
@@ -72,12 +86,26 @@ export class ApiCollector {
       this.addEventListener('error', function () {
         self.reportApiError('xhr', (this as any).__fe_monitor_url__, {
           error: 'Network Error',
-          duration: Date.now() - ((this as any).__fe_monitor_start__ || Date.now()),
+          duration:
+            Date.now() - ((this as any).__fe_monitor_start__ || Date.now()),
         });
       });
 
       return self.originalXHRSend.apply(this, args);
     };
+  }
+
+  private markApiReported(error: unknown) {
+    if (error && typeof error === 'object') {
+      try {
+        Object.defineProperty(error, FE_MONITOR_API_REPORTED, {
+          value: true,
+          enumerable: false,
+        });
+      } catch {
+        (error as Record<string, unknown>)[FE_MONITOR_API_REPORTED] = true;
+      }
+    }
   }
 
   private reportApiError(apiType: string, url: string, details: any) {
@@ -91,7 +119,10 @@ export class ApiCollector {
       url: window.location.href,
       userAgent: navigator.userAgent,
       data: {
-        apiUrl: typeof url === 'string' ? url : String((url as any)?.url || url || ''),
+        apiUrl:
+          typeof url === 'string'
+            ? url
+            : String((url as any)?.url || url || ''),
         ...details,
       },
     };

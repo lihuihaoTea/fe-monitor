@@ -127,12 +127,15 @@ export class Reporter {
   }
 
   private bindUnload() {
+    let flushed = false;
     const handler = () => {
+      if (flushed) return;
+      flushed = true;
       this.flush();
     };
 
-    window.addEventListener('beforeunload', handler);
     window.addEventListener('pagehide', handler);
+    window.addEventListener('beforeunload', handler);
   }
 
   private startTimer() {

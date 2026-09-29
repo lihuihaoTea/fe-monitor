@@ -44,6 +44,7 @@ function stringifyErrorValue(value) {
 }
 
 // src/collectors/error.ts
+var FE_MONITOR_API_REPORTED = "__fe_monitor_api_reported__";
 var ErrorCollector = class {
   constructor(config, reporter) {
     this.config = config;
@@ -54,32 +55,39 @@ var ErrorCollector = class {
     this.listenUnhandledRejection();
   }
   listenError() {
-    window.addEventListener("error", (event) => {
-      if (event.target !== window) return;
-      const monitorEvent = {
-        type: "error",
-        subType: "js",
-        timestamp: Date.now(),
-        appId: this.config.appId,
-        sessionId: getSessionId(),
-        visitorId: getVisitorId(),
-        url: window.location.href,
-        userAgent: navigator.userAgent,
-        data: {
-          message: stringifyErrorValue(event.message || event.error),
-          filename: event.filename,
-          lineno: event.lineno,
-          colno: event.colno,
-          stack: event.error instanceof Error ? event.error.stack : void 0,
-          error: stringifyErrorValue(event.error)
-        }
-      };
-      this.reporter.report(monitorEvent);
-    }, true);
+    window.addEventListener(
+      "error",
+      (event) => {
+        if (event.target !== window) return;
+        const monitorEvent = {
+          type: "error",
+          subType: "js",
+          timestamp: Date.now(),
+          appId: this.config.appId,
+          sessionId: getSessionId(),
+          visitorId: getVisitorId(),
+          url: window.location.href,
+          userAgent: navigator.userAgent,
+          data: {
+            message: stringifyErrorValue(event.message || event.error),
+            filename: event.filename,
+            lineno: event.lineno,
+            colno: event.colno,
+            stack: event.error instanceof Error ? event.error.stack : void 0,
+            error: stringifyErrorValue(event.error)
+          }
+        };
+        this.reporter.report(monitorEvent);
+      },
+      true
+    );
   }
   listenUnhandledRejection() {
     window.addEventListener("unhandledrejection", (event) => {
       const reason = event.reason;
+      if (reason && typeof reason === "object" && reason[FE_MONITOR_API_REPORTED]) {
+        return;
+      }
       const monitorEvent = {
         type: "error",
         subType: "promise",
@@ -163,6 +171,7 @@ var ApiCollector = class {
           error: error?.message || stringifyErrorValue(error),
           duration: Date.now() - startTime
         });
+        self.markApiReported(error);
         throw error;
       });
     };
@@ -175,6 +184,10 @@ var ApiCollector = class {
       return self.originalXHROpen.apply(this, [method, url, ...rest]);
     };
     XMLHttpRequest.prototype.send = function(...args) {
+      if (this.__fe_monitor_bound__) {
+        return self.originalXHRSend.apply(this, args);
+      }
+      this.__fe_monitor_bound__ = true;
       this.addEventListener("loadend", function() {
         if (this.status >= 400) {
           self.reportApiError("xhr", this.__fe_monitor_url__, {
@@ -192,6 +205,18 @@ var ApiCollector = class {
       });
       return self.originalXHRSend.apply(this, args);
     };
+  }
+  markApiReported(error) {
+    if (error && typeof error === "object") {
+      try {
+        Object.defineProperty(error, FE_MONITOR_API_REPORTED, {
+          value: true,
+          enumerable: false
+        });
+      } catch {
+        error[FE_MONITOR_API_REPORTED] = true;
+      }
+    }
   }
   reportApiError(apiType, url, details) {
     const monitorEvent = {
@@ -272,7 +297,11 @@ var BlankCollector = class {
 // src/collectors/performance.ts
 var PerformanceCollector = class {
   constructor(config, reporter) {
-    this.reported = false;
+    this.loadReported = false;
+    this.fcpReported = false;
+    this.lcpValue = null;
+    this.lcpReported = false;
+    this.lcpObserver = null;
     this.config = config;
     this.reporter = reporter;
   }
@@ -290,31 +319,75 @@ var PerformanceCollector = class {
     try {
       const observer = new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
-          if (entry.name === "first-contentful-paint") {
-            this.reportPerformance("fcp", entry.startTime);
+          if (entry.name !== "first-contentful-paint" || this.fcpReported) continue;
+          this.fcpReported = true;
+          this.reportPerformance("fcp", entry.startTime);
+          try {
+            observer.disconnect();
+          } catch {
           }
         }
       });
-      observer.observe({ entryTypes: ["paint"] });
-    } catch (e) {
+      observer.observe({ type: "paint", buffered: true });
+    } catch {
+      try {
+        const observer = new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) {
+            if (entry.name !== "first-contentful-paint" || this.fcpReported) continue;
+            this.fcpReported = true;
+            this.reportPerformance("fcp", entry.startTime);
+          }
+        });
+        observer.observe({ entryTypes: ["paint"] });
+      } catch {
+      }
     }
   }
   observeLCP() {
     if (!("PerformanceObserver" in window)) return;
     try {
-      const observer = new PerformanceObserver((list) => {
+      this.lcpObserver = new PerformanceObserver((list) => {
         const entries = list.getEntries();
         const lastEntry = entries[entries.length - 1];
         if (lastEntry) {
-          this.reportPerformance("lcp", lastEntry.startTime);
+          this.lcpValue = lastEntry.startTime;
         }
       });
-      observer.observe({ entryTypes: ["largest-contentful-paint"] });
-    } catch (e) {
+      this.lcpObserver.observe({
+        type: "largest-contentful-paint",
+        buffered: true
+      });
+    } catch {
+      try {
+        this.lcpObserver = new PerformanceObserver((list) => {
+          const entries = list.getEntries();
+          const lastEntry = entries[entries.length - 1];
+          if (lastEntry) this.lcpValue = lastEntry.startTime;
+        });
+        this.lcpObserver.observe({ entryTypes: ["largest-contentful-paint"] });
+      } catch {
+        return;
+      }
+    }
+    const finalizeLcp = () => {
+      this.flushLcp();
+    };
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") finalizeLcp();
+    });
+    window.addEventListener("pagehide", finalizeLcp);
+  }
+  flushLcp() {
+    if (this.lcpReported || this.lcpValue == null) return;
+    this.lcpReported = true;
+    this.reportPerformance("lcp", this.lcpValue);
+    try {
+      this.lcpObserver?.disconnect();
+    } catch {
     }
   }
   reportLoadTiming() {
-    if (this.reported) return;
+    if (this.loadReported) return;
     const timing = performance.timing;
     const loadTime = timing.loadEventEnd - timing.fetchStart;
     const domReady = timing.domContentLoadedEventEnd - timing.fetchStart;
@@ -324,7 +397,7 @@ var PerformanceCollector = class {
       tcp: timing.connectEnd - timing.connectStart,
       ttfb: timing.responseStart - timing.requestStart
     });
-    this.reported = true;
+    this.loadReported = true;
   }
   reportPerformance(metric, value, extra) {
     const monitorEvent = {
@@ -351,6 +424,7 @@ var BehaviorCollector = class {
   constructor(config, reporter) {
     this.pageEnterTime = Date.now();
     this.clickCount = 0;
+    this.stayReported = false;
     this.config = config;
     this.reporter = reporter;
   }
@@ -377,12 +451,18 @@ var BehaviorCollector = class {
     this.reporter.report(monitorEvent);
   }
   trackClicks() {
-    document.addEventListener("click", () => {
-      this.clickCount++;
-    }, true);
+    document.addEventListener(
+      "click",
+      () => {
+        this.clickCount++;
+      },
+      true
+    );
   }
   trackTimeOnPage() {
     const reportStay = () => {
+      if (this.stayReported) return;
+      this.stayReported = true;
       const stayTime = Date.now() - this.pageEnterTime;
       const monitorEvent = {
         type: "behavior",
@@ -400,8 +480,8 @@ var BehaviorCollector = class {
       };
       this.reporter.report(monitorEvent);
     };
-    window.addEventListener("beforeunload", reportStay);
     window.addEventListener("pagehide", reportStay);
+    window.addEventListener("beforeunload", reportStay);
   }
 };
 
@@ -505,11 +585,14 @@ var Reporter = class {
     }
   }
   bindUnload() {
+    let flushed = false;
     const handler = () => {
+      if (flushed) return;
+      flushed = true;
       this.flush();
     };
-    window.addEventListener("beforeunload", handler);
     window.addEventListener("pagehide", handler);
+    window.addEventListener("beforeunload", handler);
   }
   startTimer() {
     this.timer = setInterval(() => {

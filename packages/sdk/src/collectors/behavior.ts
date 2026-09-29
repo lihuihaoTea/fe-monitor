@@ -7,6 +7,7 @@ export class BehaviorCollector {
   private reporter: Reporter;
   private pageEnterTime = Date.now();
   private clickCount = 0;
+  private stayReported = false;
 
   constructor(config: MonitorConfig, reporter: Reporter) {
     this.config = config;
@@ -39,13 +40,20 @@ export class BehaviorCollector {
   }
 
   private trackClicks() {
-    document.addEventListener('click', () => {
-      this.clickCount++;
-    }, true);
+    document.addEventListener(
+      'click',
+      () => {
+        this.clickCount++;
+      },
+      true
+    );
   }
 
   private trackTimeOnPage() {
     const reportStay = () => {
+      if (this.stayReported) return;
+      this.stayReported = true;
+
       const stayTime = Date.now() - this.pageEnterTime;
 
       const monitorEvent: MonitorEvent = {
@@ -66,7 +74,8 @@ export class BehaviorCollector {
       this.reporter.report(monitorEvent);
     };
 
-    window.addEventListener('beforeunload', reportStay);
+    // beforeunload + pagehide 在多数浏览器会连续触发，用 stayReported 防重
     window.addEventListener('pagehide', reportStay);
+    window.addEventListener('beforeunload', reportStay);
   }
 }
