@@ -62,6 +62,9 @@ export interface EventListQuery {
   subType?: string;
   messageKeyword?: string;
   urlKeyword?: string;
+  /** timestamp | value | domReady */
+  sortBy?: 'timestamp' | 'value' | 'domReady';
+  sortOrder?: 'asc' | 'desc';
 }
 
 export interface EventListResponse {

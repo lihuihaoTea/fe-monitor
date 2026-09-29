@@ -9,6 +9,7 @@ import {
   theme,
 } from 'antd';
 import type { TablePaginationConfig } from 'antd';
+import type { SorterResult } from 'antd/es/table/interface';
 import dayjs from 'dayjs';
 import { fetchLatestEvents } from '@/lib/api';
 import type { LatestErrorItem } from '@/lib/types';
@@ -21,6 +22,9 @@ interface PerformanceEventListProps {
   /** performance 事件的 sub_type：fcp | lcp | load | domReady */
   metric: 'fcp' | 'lcp' | 'load' | 'domReady';
 }
+
+type SortBy = 'timestamp' | 'value' | 'domReady';
+type SortOrder = 'asc' | 'desc';
 
 function CopyableText({ value, type }: { value?: string; type?: 'secondary' }) {
   const text = value || '-';
@@ -66,12 +70,15 @@ export function PerformanceEventList({ title, metric }: PerformanceEventListProp
   const [urlInput, setUrlInput] = useState('');
   const [data, setData] = useState<LatestErrorItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [sortBy, setSortBy] = useState<SortBy>('timestamp');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
 
   const startDate = dateRange[0].format('YYYY-MM-DD');
   const endDate = dateRange[1].format('YYYY-MM-DD');
 
   // DOM Ready 嵌在 load 上报里，按 load 拉取后取 data.domReady
   const querySubType = metric === 'domReady' ? 'load' : metric;
+  const valueSortBy: SortBy = metric === 'domReady' ? 'domReady' : 'value';
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -85,6 +92,8 @@ export function PerformanceEventList({ title, metric }: PerformanceEventListProp
         limit: pageSize,
         subType: querySubType,
         urlKeyword: urlKeyword || undefined,
+        sortBy,
+        sortOrder,
       });
       setData(result.list);
       setTotal(result.total);
@@ -95,7 +104,17 @@ export function PerformanceEventList({ title, metric }: PerformanceEventListProp
     } finally {
       setLoading(false);
     }
-  }, [appId, startDate, endDate, page, pageSize, querySubType, urlKeyword]);
+  }, [
+    appId,
+    startDate,
+    endDate,
+    page,
+    pageSize,
+    querySubType,
+    urlKeyword,
+    sortBy,
+    sortOrder,
+  ]);
 
   useEffect(() => {
     loadList();
@@ -118,13 +137,6 @@ export function PerformanceEventList({ title, metric }: PerformanceEventListProp
     pageSizeOptions: LIST_LIMIT_OPTIONS.map(String),
     showTotal: (t) => `共 ${formatNumber(t)} 条`,
     position: ['bottomCenter'],
-    onChange: (nextPage, nextSize) => {
-      setPage(nextPage);
-      if (nextSize && nextSize !== pageSize) {
-        setPageSize(nextSize as ListLimit);
-        setPage(1);
-      }
-    },
   };
 
   return (
@@ -193,6 +205,33 @@ export function PerformanceEventList({ title, metric }: PerformanceEventListProp
         tableLayout="fixed"
         locale={{ emptyText: '暂无采样' }}
         dataSource={data}
+        onChange={(nextPagination, _filters, sorter, extra) => {
+          if (extra.action === 'sort') {
+            const single = (
+              Array.isArray(sorter) ? sorter[0] : sorter
+            ) as SorterResult<LatestErrorItem>;
+            if (!single?.order || single.columnKey !== 'value') {
+              setSortBy('timestamp');
+              setSortOrder('desc');
+            } else {
+              setSortBy(valueSortBy);
+              setSortOrder(single.order === 'ascend' ? 'asc' : 'desc');
+            }
+            setPage(1);
+            return;
+          }
+
+          if (extra.action === 'paginate') {
+            const nextSize = nextPagination.pageSize;
+            const nextPage = nextPagination.current || 1;
+            if (nextSize && nextSize !== pageSize) {
+              setPageSize(nextSize as ListLimit);
+              setPage(1);
+            } else {
+              setPage(nextPage);
+            }
+          }
+        }}
         columns={[
           {
             title: '时间',
@@ -205,6 +244,13 @@ export function PerformanceEventList({ title, metric }: PerformanceEventListProp
             title: '耗时',
             key: 'value',
             width: 120,
+            sorter: true,
+            sortOrder:
+              sortBy === valueSortBy
+                ? sortOrder === 'asc'
+                  ? 'ascend'
+                  : 'descend'
+                : undefined,
             render: (_: unknown, record: LatestErrorItem) => {
               const value = metricValue(record, metric);
               return value == null ? '-' : `${formatNumber(value)} ms`;

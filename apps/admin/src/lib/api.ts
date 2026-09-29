@@ -60,6 +60,8 @@ export async function fetchLatestEvents(
     url.searchParams.set('messageKeyword', params.messageKeyword);
   }
   if (params.urlKeyword) url.searchParams.set('urlKeyword', params.urlKeyword);
+  if (params.sortBy) url.searchParams.set('sortBy', params.sortBy);
+  if (params.sortOrder) url.searchParams.set('sortOrder', params.sortOrder);
 
   const res = await fetch(url.toString());
   if (!res.ok) {

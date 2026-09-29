@@ -26,6 +26,23 @@ function queryString(raw: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+const SORT_EXPRESSIONS: Record<string, string> = {
+  timestamp: 'timestamp',
+  value: `CAST(json_extract(data, '$.value') AS REAL)`,
+  domReady: `CAST(json_extract(data, '$.domReady') AS REAL)`,
+};
+
+function parseSortClause(sortByRaw: unknown, sortOrderRaw: unknown): string {
+  const sortBy = queryString(sortByRaw);
+  const expr = SORT_EXPRESSIONS[sortBy] || SORT_EXPRESSIONS.timestamp;
+  const order = queryString(sortOrderRaw).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  // 次级排序保证同耗时下顺序稳定
+  if (expr === 'timestamp') {
+    return `ORDER BY timestamp ${order}`;
+  }
+  return `ORDER BY ${expr} ${order}, timestamp DESC`;
+}
+
 /**
  * GET /api/events/sub-types
  * 某分类下的类型筛选项（库中 distinct + 预定义兜底）
@@ -133,6 +150,7 @@ eventsRouter.get('/latest', (req, res) => {
     }
 
     const whereSql = conditions.join(' AND ');
+    const orderSql = parseSortClause(req.query.sortBy, req.query.sortOrder);
 
     const totalRow = db
       .prepare(`SELECT COUNT(*) as total FROM events WHERE ${whereSql}`)
@@ -143,7 +161,7 @@ eventsRouter.get('/latest', (req, res) => {
         `SELECT id, type, sub_type, timestamp, url, data
          FROM events
          WHERE ${whereSql}
-         ORDER BY timestamp DESC
+         ${orderSql}
          LIMIT ${limit} OFFSET ${offset}`
       )
       .all(...params) as Array<{
