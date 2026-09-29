@@ -46,12 +46,21 @@ log "构建产物验证通过"
 log "Step 3: 重启后端服务 (PORT=${SERVER_PORT})..."
 pm2 delete "${PM2_NAME}" 2>/dev/null || true
 PORT=${SERVER_PORT} pm2 start apps/server/dist/index.js --name "${PM2_NAME}" || error "PM2 启动失败"
-sleep 2
-
-# 健康检查
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${HEALTH_URL}" || echo "000")
+# 健康检查（最多重试 30 次，每次间隔 2 秒，总超时 60 秒）
+MAX_RETRIES=30
+RETRY_INTERVAL=2
+HTTP_CODE="000"
+for i in $(seq 1 ${MAX_RETRIES}); do
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${HEALTH_URL}" || echo "000")
+    if [ "${HTTP_CODE}" = "200" ]; then
+        log "健康检查通过 (HTTP ${HTTP_CODE}，第 ${i} 次尝试)"
+        break
+    fi
+    log "健康检查未通过 (HTTP ${HTTP_CODE}，第 ${i}/${MAX_RETRIES} 次)，${RETRY_INTERVAL}s 后重试..."
+    sleep ${RETRY_INTERVAL}
+done
 if [ "${HTTP_CODE}" != "200" ]; then
-    log "健康检查失败 (HTTP ${HTTP_CODE})，尝试回滚..."
+    log "健康检查失败 (HTTP ${HTTP_CODE}，已重试 ${MAX_RETRIES} 次)，尝试回滚..."
     git reset --hard "${BEFORE_COMMIT}"
     pm2 delete "${PM2_NAME}" 2>/dev/null || true
     PORT=${SERVER_PORT} pm2 start apps/server/dist/index.js --name "${PM2_NAME}"
