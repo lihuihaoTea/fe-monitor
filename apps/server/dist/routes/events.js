@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db } from '../db/index.js';
-import { EVENT_CATEGORIES, PRESET_SUB_TYPES, categoryWhereSql, mapEventRow, parseLatestLimit, parseRangeBound, } from './eventQuery.js';
+import { EVENT_CATEGORIES, PRESET_SUB_TYPES, categoryWhereSql, mapEventRow, parseLatestLimit, parsePage, parseRangeBound, } from './eventQuery.js';
 export const eventsRouter = Router();
 function parseCategory(raw) {
     const value = Array.isArray(raw) ? raw[0] : raw;
@@ -64,6 +64,8 @@ eventsRouter.get('/latest', (req, res) => {
         const messageKeyword = queryString(req.query.messageKeyword);
         const urlKeyword = queryString(req.query.urlKeyword);
         const limit = parseLatestLimit(req.query.limit ?? req.query.latestLimit);
+        const page = parsePage(req.query.page);
+        const offset = (page - 1) * limit;
         if (!appId || typeof appId !== 'string') {
             return res.status(400).json({ error: 'appId is required' });
         }
@@ -104,23 +106,28 @@ eventsRouter.get('/latest', (req, res) => {
             conditions.push('url LIKE ?');
             params.push(`%${urlKeyword}%`);
         }
+        const whereSql = conditions.join(' AND ');
+        const totalRow = db
+            .prepare(`SELECT COUNT(*) as total FROM events WHERE ${whereSql}`)
+            .get(...params);
         const rows = db
             .prepare(`SELECT id, type, sub_type, timestamp, url, data
          FROM events
-         WHERE ${conditions.join(' AND ')}
+         WHERE ${whereSql}
          ORDER BY timestamp DESC
-         LIMIT ${limit}`)
+         LIMIT ${limit} OFFSET ${offset}`)
             .all(...params);
         res.json({
             category,
+            page,
             limit,
+            total: totalRow?.total ?? 0,
             filters: {
                 subType: subTypeValue || null,
                 messageKeyword: messageKeyword || null,
                 urlKeyword: urlKeyword || null,
             },
             list: rows.map(mapEventRow),
-            total: rows.length,
         });
     }
     catch (error) {

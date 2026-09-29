@@ -19,7 +19,13 @@ export const OTHER_ISSUE_SQL = `(
     OR sub_type NOT IN ('js', 'promise')
   )
 )`;
-export const EVENT_CATEGORIES = ['js', 'resource', 'api', 'other'];
+export const EVENT_CATEGORIES = [
+    'js',
+    'resource',
+    'api',
+    'other',
+    'performance',
+];
 export function categoryWhereSql(category) {
     switch (category) {
         case 'js':
@@ -30,6 +36,8 @@ export function categoryWhereSql(category) {
             return `(type = 'api')`;
         case 'other':
             return OTHER_ISSUE_SQL;
+        case 'performance':
+            return `(type = 'performance')`;
         default:
             return '(1 = 0)';
     }
@@ -54,7 +62,15 @@ export const LATEST_LIMIT_OPTIONS = [20, 50, 100, 200];
 export function parseLatestLimit(raw) {
     const value = Array.isArray(raw) ? raw[0] : raw;
     const parsed = Number(value);
-    return LATEST_LIMIT_OPTIONS.includes(parsed) ? parsed : 20;
+    return LATEST_LIMIT_OPTIONS.includes(parsed) ? parsed : 50;
+}
+/** 页码从 1 起 */
+export function parsePage(raw) {
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 1)
+        return 1;
+    return Math.floor(parsed);
 }
 export function mapEventRow(row) {
     let payload = {};
@@ -89,6 +105,10 @@ export function mapEventRow(row) {
                 .filter(Boolean)
                 .join(' · ') || 'API 请求失败';
     }
+    else if (row.type === 'performance') {
+        const value = Number(payload.value);
+        message = Number.isFinite(value) ? `${Math.round(value)} ms` : '-';
+    }
     return {
         id: row.id,
         type: row.type,
@@ -109,5 +129,6 @@ export const PRESET_SUB_TYPES = {
     resource: ['img', 'script', 'link', 'video', 'audio', 'source'],
     api: ['fetch', 'xhr'],
     other: ['manual', '404'],
+    performance: ['fcp', 'lcp', 'load', 'domReady'],
 };
 //# sourceMappingURL=eventQuery.js.map
