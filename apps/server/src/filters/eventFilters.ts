@@ -63,8 +63,9 @@ export function addFilter(input: {
 }): { ok: true; id: number } | { ok: false; error: string } {
   const eventType = input.eventType.trim();
   const matchType = input.matchType;
-  const matchValue = input.matchValue.trim();
-  if (!eventType || !matchValue) {
+  // 保留空格（含尾部空格），仅用 trim 判断是否为空
+  const matchValue = input.matchValue;
+  if (!eventType || !matchValue.trim()) {
     return { ok: false, error: 'eventType / matchValue 不能为空' };
   }
   if (!MATCH_TYPES.includes(matchType)) {
