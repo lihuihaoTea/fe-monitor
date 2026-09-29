@@ -31,3 +31,39 @@ export function formatNumberOrDash(
   const text = formatNumber(n, { precision: options?.precision });
   return options?.unit ? `${text} ${options.unit}` : text;
 }
+
+/**
+ * 耗时（毫秒）→ `xh ymin zs wms` 风格展示。
+ * @example formatDuration(3661250) => "1h1min1s250ms"
+ * @example formatDuration(125000) => "2min5s"
+ * @example formatDuration(2150) => "2s150ms"
+ * @example formatDuration(850) => "850ms"
+ */
+export function formatDuration(
+  value: number | string | null | undefined
+): string {
+  if (value == null || value === '') return '-';
+  const ms = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(ms) || ms < 0) return '-';
+
+  const total = Math.round(ms);
+  const hours = Math.floor(total / 3_600_000);
+  const minutes = Math.floor((total % 3_600_000) / 60_000);
+  const seconds = Math.floor((total % 60_000) / 1000);
+  const millis = total % 1000;
+
+  if (hours === 0 && minutes === 0 && seconds === 0) {
+    return `${millis}ms`;
+  }
+
+  const parts: string[] = [];
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0 || hours > 0) parts.push(`${minutes}min`);
+  if (seconds > 0 || (hours === 0 && minutes === 0)) {
+    parts.push(`${seconds}s`);
+  }
+  if (millis > 0 && hours === 0 && minutes === 0) {
+    parts.push(`${millis}ms`);
+  }
+  return parts.join('');
+}

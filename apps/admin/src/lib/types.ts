@@ -64,7 +64,7 @@ export interface EventListQuery {
   urlKeyword?: string;
   /** timestamp | value | domReady */
   sortBy?: 'timestamp' | 'value' | 'domReady';
-  sortOrder?: 'asc' | 'desc';
+  sortOrder?: 'ascend' | 'descend';
 }
 
 export interface EventListResponse {

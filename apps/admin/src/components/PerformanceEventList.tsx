@@ -15,7 +15,7 @@ import { fetchLatestEvents } from '@/lib/api';
 import type { LatestErrorItem } from '@/lib/types';
 import { useFilters } from '@/context/FilterContext';
 import { LIST_LIMIT_OPTIONS, type ListLimit } from '@/components/LatestErrorList';
-import { formatNumber } from '@/lib/format';
+import { formatDuration, formatNumber } from '@/lib/format';
 
 interface PerformanceEventListProps {
   title: string;
@@ -24,7 +24,7 @@ interface PerformanceEventListProps {
 }
 
 type SortBy = 'timestamp' | 'value' | 'domReady';
-type SortOrder = 'asc' | 'desc';
+type SortOrder = 'ascend' | 'descend';
 
 function CopyableText({ value, type }: { value?: string; type?: 'secondary' }) {
   const text = value || '-';
@@ -71,7 +71,7 @@ export function PerformanceEventList({ title, metric }: PerformanceEventListProp
   const [data, setData] = useState<LatestErrorItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [sortBy, setSortBy] = useState<SortBy>('timestamp');
-  const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('descend');
 
   const startDate = dateRange[0].format('YYYY-MM-DD');
   const endDate = dateRange[1].format('YYYY-MM-DD');
@@ -212,10 +212,10 @@ export function PerformanceEventList({ title, metric }: PerformanceEventListProp
             ) as SorterResult<LatestErrorItem>;
             if (!single?.order || single.columnKey !== 'value') {
               setSortBy('timestamp');
-              setSortOrder('desc');
+              setSortOrder('descend');
             } else {
               setSortBy(valueSortBy);
-              setSortOrder(single.order === 'ascend' ? 'asc' : 'desc');
+              setSortOrder(single.order);
             }
             setPage(1);
             return;
@@ -243,17 +243,13 @@ export function PerformanceEventList({ title, metric }: PerformanceEventListProp
           {
             title: '耗时',
             key: 'value',
-            width: 120,
+            width: 140,
             sorter: true,
-            sortOrder:
-              sortBy === valueSortBy
-                ? sortOrder === 'asc'
-                  ? 'ascend'
-                  : 'descend'
-                : undefined,
+            // 默认不排序 → 降序 → 升序 → 取消
+            sortDirections: ['descend', 'ascend'],
             render: (_: unknown, record: LatestErrorItem) => {
               const value = metricValue(record, metric);
-              return value == null ? '-' : `${formatNumber(value)} ms`;
+              return formatDuration(value);
             },
           },
           {
