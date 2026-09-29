@@ -4,6 +4,8 @@ dist
 !packages/sdk/dist/**
 !apps/admin/dist/
 !apps/admin/dist/**
+!apps/server/dist/
+!apps/server/dist/**
 .next
 .turbo
 *.log
