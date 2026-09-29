@@ -47,6 +47,14 @@ statsRouter.get('/', (req, res) => {
          WHERE app_id = ? AND type = 'performance' AND timestamp >= ? AND timestamp <= ?
          GROUP BY sub_type`)
             .all(appId, start, end);
+        // SDK 将 domReady 嵌在 load 事件的 data.domReady，无独立 sub_type
+        const domReadyAvg = db
+            .prepare(`SELECT AVG(CAST(json_extract(data, '$.domReady') AS REAL)) as avg_value
+         FROM events
+         WHERE app_id = ? AND type = 'performance' AND sub_type = 'load'
+           AND timestamp >= ? AND timestamp <= ?
+           AND json_extract(data, '$.domReady') IS NOT NULL`)
+            .get(appId, start, end);
         const pvCount = db
             .prepare(`SELECT COUNT(*) as count FROM events
          WHERE app_id = ? AND type = 'behavior' AND sub_type = 'pv'
@@ -85,8 +93,8 @@ statsRouter.get('/', (req, res) => {
             THEN CAST(json_extract(data, '$.value') AS REAL) END) as lcp,
           AVG(CASE WHEN type = 'performance' AND sub_type = 'load'
             THEN CAST(json_extract(data, '$.value') AS REAL) END) as load,
-          AVG(CASE WHEN type = 'performance' AND sub_type = 'domReady'
-            THEN CAST(json_extract(data, '$.value') AS REAL) END) as domReady,
+          AVG(CASE WHEN type = 'performance' AND sub_type = 'load'
+            THEN CAST(json_extract(data, '$.domReady') AS REAL) END) as domReady,
           AVG(CASE WHEN type = 'behavior' AND sub_type = 'stay'
             THEN CAST(json_extract(data, '$.duration') AS REAL) END) as avgStay,
           SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
@@ -126,10 +134,14 @@ statsRouter.get('/', (req, res) => {
                 notFound404: notFound404.count,
                 otherIssues: otherIssues.count,
             },
-            performance: performanceMetrics.reduce((acc, item) => {
-                acc[item.metric] = Math.round(item.avg_value || 0);
-                return acc;
-            }, {}),
+            performance: (() => {
+                const perf = performanceMetrics.reduce((acc, item) => {
+                    acc[item.metric] = Math.round(item.avg_value || 0);
+                    return acc;
+                }, {});
+                perf.domReady = Math.round(domReadyAvg?.avg_value || 0);
+                return perf;
+            })(),
             behavior: {
                 pv: pvCount.count,
                 uv: uvCount.count,
