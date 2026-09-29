@@ -1,5 +1,5 @@
 /**
- * 按 event_filters 表清理历史脏数据。
+ * 按 event_filters 表清理历史脏数据（分批处理，避免 OOM）。
  *
  * 用法：
  *   pnpm db:clean-filtered -- --dry-run   # 仅预览
@@ -15,6 +15,7 @@ import {
 const args = new Set(process.argv.slice(2));
 const dryRun = args.has('--dry-run');
 const doAnalyze = args.has('--analyze') || args.has('--vacuum');
+const BATCH_SIZE = 1000;
 
 function parseData(raw: unknown): any {
   if (raw == null) return {};
@@ -31,8 +32,8 @@ function parseData(raw: unknown): any {
 
 async function main() {
   await initDB();
-
   console.log(`模式: ${dryRun ? 'dry-run（只统计不删除）' : '删除'}`);
+
   const rules = await loadEnabledFilters();
   console.log('当前启用的筛除规则:');
   console.log(JSON.stringify(rules, null, 2));
@@ -44,31 +45,42 @@ async function main() {
     return;
   }
 
+  // 先统计候选总量
   const placeholders = types.map(() => '?').join(', ');
-  const candidates = await query<{
-    id: number;
-    type: string;
-    data: unknown;
-  }>(
-    `SELECT id, type, data
-     FROM events
-     WHERE type IN (${placeholders})`,
+  const totalRow = await queryOne<{ count: string | number }>(
+    `SELECT COUNT(*)::int as count FROM events WHERE type IN (${placeholders})`,
     types
   );
-
-  console.log(`候选事件（${types.join(',')}）: ${candidates.length}`);
+  const totalCandidates = Number(totalRow?.count) || 0;
+  console.log(`候选事件（${types.join(',')}）: ${totalCandidates}`);
 
   const toDeleteIds: number[] = [];
   const byType: Record<string, number> = {};
+  let processed = 0;
+  let lastId = 0;
 
-  for (const row of candidates) {
-    const event = {
-      type: row.type,
-      data: parseData(row.data),
-    };
-    if (!(await shouldFilterEvent(event))) continue;
-    toDeleteIds.push(Number(row.id));
-    byType[row.type] = (byType[row.type] || 0) + 1;
+  // 分批读取候选事件
+  while (true) {
+    const batch = await query<{ id: number; type: string; data: unknown }>(
+      `SELECT id, type, data FROM events
+       WHERE type IN (${placeholders}) AND id > ?
+       ORDER BY id ASC LIMIT ?`,
+      [...types, lastId, BATCH_SIZE]
+    );
+
+    if (batch.length === 0) break;
+
+    for (const row of batch) {
+      const event = { type: row.type, data: parseData(row.data) };
+      if (await shouldFilterEvent(event)) {
+        toDeleteIds.push(Number(row.id));
+        byType[row.type] = (byType[row.type] || 0) + 1;
+      }
+      lastId = Math.max(lastId, Number(row.id));
+    }
+
+    processed += batch.length;
+    console.log(`已扫描 ${processed}/${totalCandidates}，命中 ${toDeleteIds.length}`);
   }
 
   console.log('命中筛除规则待清理:');
@@ -82,21 +94,19 @@ async function main() {
   }
 
   if (dryRun) {
-    console.log(
-      'dry-run 结束，未执行删除。去掉 --dry-run 再跑一次即可真正清理。'
-    );
+    console.log('dry-run 结束，未执行删除。去掉 --dry-run 再跑一次即可真正清理。');
     await closeDB();
     return;
   }
 
-  const batchSize = 500;
+  // 分批删除
   let deleted = 0;
-  for (let i = 0; i < toDeleteIds.length; i += batchSize) {
-    const batch = toDeleteIds.slice(i, i + batchSize);
-    const ph = batch.map(() => '?').join(', ');
+  for (let i = 0; i < toDeleteIds.length; i += BATCH_SIZE) {
+    const batchIds = toDeleteIds.slice(i, i + BATCH_SIZE);
+    const ph = batchIds.map(() => '?').join(', ');
     const count = await execute(
       `DELETE FROM events WHERE id IN (${ph})`,
-      batch
+      batchIds
     );
     deleted += count;
     console.log(`已删除 ${deleted}/${toDeleteIds.length}`);
