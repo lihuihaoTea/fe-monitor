@@ -31,10 +31,10 @@ git reset --hard origin/main || error "git reset 失败"
 AFTER_COMMIT=$(git rev-parse HEAD)
 
 if [ "${BEFORE_COMMIT}" = "${AFTER_COMMIT}" ]; then
-    log "代码已是最新 (${AFTER_COMMIT:0:8})，跳过后续步骤"
-    exit 0
+    log "代码无更新 (${AFTER_COMMIT:0:8})，仍继续执行重新部署"
+else
+    log "代码已更新: ${BEFORE_COMMIT:0:8} → ${AFTER_COMMIT:0:8}"
 fi
-log "代码已更新: ${BEFORE_COMMIT:0:8} → ${AFTER_COMMIT:0:8}"
 
 # ===== Step 2: 验证构建产物完整性 =====
 log "Step 2: 验证构建产物..."
