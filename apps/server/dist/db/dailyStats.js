@@ -53,8 +53,8 @@ function parseData(data) {
         return data;
     return {};
 }
-/** 去掉 query/hash，限制长度，降低 URL 基数 */
-export function normalizePerfUrl(raw) {
+/** 去掉 query/hash，限制长度，降低 URL 基数（性能 / PV 共用） */
+export function normalizePageUrl(raw) {
     const input = (raw || '').trim();
     if (!input)
         return '(empty)';
@@ -70,6 +70,8 @@ export function normalizePerfUrl(raw) {
         normalized = normalized.slice(0, 500);
     return normalized || '(empty)';
 }
+/** @deprecated 使用 normalizePageUrl */
+export const normalizePerfUrl = normalizePageUrl;
 export function extractPerfSamples(event) {
     if (event.type !== 'performance')
         return [];
@@ -291,6 +293,13 @@ export async function applyRollupWithClient(client, event) {
        VALUES (?, ?::date, ?)
        ON CONFLICT DO NOTHING`, [event.appId, date, event.visitorId]);
     }
+    if (delta.pv > 0) {
+        const url = normalizePerfUrl(event.url);
+        await clientQuery(client, `INSERT INTO event_daily_pv_urls AS u (app_id, date, url, pv)
+       VALUES (?, ?::date, ?, ?)
+       ON CONFLICT (app_id, date, url) DO UPDATE SET
+         pv = u.pv + EXCLUDED.pv`, [event.appId, date, url, delta.pv]);
+    }
     await upsertHourlyAndUrl(client, event);
 }
 /** 从 events 全量重建日/小时/URL 聚合 */
@@ -302,7 +311,8 @@ export async function rebuildDailyStats() {
         event_daily_error_types,
         event_daily_visitors,
         event_hourly_perf,
-        event_daily_perf_urls
+        event_daily_perf_urls,
+        event_daily_pv_urls
       IN ACCESS EXCLUSIVE MODE
     `);
         await client.query(`
@@ -311,7 +321,8 @@ export async function rebuildDailyStats() {
         event_daily_error_types,
         event_daily_visitors,
         event_hourly_perf,
-        event_daily_perf_urls
+        event_daily_perf_urls,
+        event_daily_pv_urls
     `);
         await clientQuery(client, `
       INSERT INTO event_daily_stats (
@@ -484,6 +495,24 @@ export async function rebuildDailyStats() {
       WHERE type = 'performance' AND sub_type = 'load'
         AND data->>'domReady' IS NOT NULL
       GROUP BY 1, 2, 4
+    `, []);
+        // 行为：按 URL 日 PV
+        await clientQuery(client, `
+      INSERT INTO event_daily_pv_urls (app_id, date, url, pv)
+      SELECT
+        app_id,
+        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
+        LEFT(
+          CASE
+            WHEN NULLIF(TRIM(url), '') IS NULL THEN '(empty)'
+            ELSE SPLIT_PART(SPLIT_PART(url, '?', 1), '#', 1)
+          END,
+          500
+        ),
+        COUNT(*)::int
+      FROM events
+      WHERE type = 'behavior' AND sub_type = 'pv'
+      GROUP BY 1, 2, 3
     `, []);
     });
 }

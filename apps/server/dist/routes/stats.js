@@ -11,6 +11,10 @@ const nOrNull = (v) => {
 };
 const CACHE_TTL_MS = Number(process.env.STATS_CACHE_TTL_MS) || 45000;
 const PERF_URL_TOP_N = Number(process.env.PERF_URL_TOP_N) || 20;
+/** 行为看板：每日访问量最高页数 */
+const PV_TOP_N = Number(process.env.PV_TOP_N) || 10;
+/** 行为看板：每日访问量最低页数 */
+const PV_BOTTOM_N = Number(process.env.PV_BOTTOM_N) || 3;
 const statsCache = new Map();
 function cacheKey(appId, startDate, endDate) {
     return `${appId}|${String(startDate || '')}|${String(endDate || '')}`;
@@ -55,7 +59,7 @@ statsRouter.get('/', async (req, res) => {
         const dayParams = [appId, startDay, endDay];
         const hourStart = `${startDay} 00:00:00`;
         const hourEnd = `${endDay} 23:59:59`;
-        const [summary, errorTypes, uvRow, dailyRows, hourlyRows, urlRows] = await Promise.all([
+        const [summary, errorTypes, uvRow, dailyRows, hourlyRows, urlRows, pvUrlRows] = await Promise.all([
             queryOne(`SELECT
              COALESCE(SUM(js_errors), 0)::int as js_errors,
              COALESCE(SUM(resource_errors), 0)::int as resource_errors,
@@ -145,6 +149,26 @@ statsRouter.get('/', async (req, res) => {
            FROM event_daily_perf_urls
            WHERE app_id = ? AND date >= ?::date AND date <= ?::date
            GROUP BY metric, url`, dayParams),
+            // 按日取 TopN / BottomN（窗口函数，避免拉全量 URL）
+            query(`WITH ranked AS (
+             SELECT
+               to_char(date, 'YYYY-MM-DD') as date,
+               url,
+               pv,
+               ROW_NUMBER() OVER (
+                 PARTITION BY date ORDER BY pv DESC, url ASC
+               ) as rn_desc,
+               ROW_NUMBER() OVER (
+                 PARTITION BY date ORDER BY pv ASC, url ASC
+               ) as rn_asc
+             FROM event_daily_pv_urls
+             WHERE app_id = ? AND date >= ?::date AND date <= ?::date
+               AND pv > 0
+           )
+           SELECT date, url, pv, rn_desc, rn_asc
+           FROM ranked
+           WHERE rn_desc <= ? OR rn_asc <= ?
+           ORDER BY date ASC, pv DESC`, [...dayParams, PV_TOP_N, PV_BOTTOM_N]),
         ]);
         const s = summary || {};
         const rowNum = (key) => n(s[key]);
@@ -219,6 +243,40 @@ statsRouter.get('/', async (req, res) => {
             list.sort((a, b) => b.avg - a.avg || b.count - a.count);
             list.splice(PERF_URL_TOP_N);
         }
+        const pvPagesByDayMap = new Map();
+        for (const row of pvUrlRows) {
+            const date = String(row.date);
+            let bucket = pvPagesByDayMap.get(date);
+            if (!bucket) {
+                bucket = { date, top: [], bottom: [] };
+                pvPagesByDayMap.set(date, bucket);
+            }
+            const item = { url: row.url, pv: n(row.pv) };
+            if (n(row.rn_desc) <= PV_TOP_N)
+                bucket.top.push(item);
+            if (n(row.rn_asc) <= PV_BOTTOM_N)
+                bucket.bottom.push(item);
+        }
+        const pvPagesByDay = Array.from(pvPagesByDayMap.values()).map((day) => {
+            // 去重（同时命中 top/bottom 时 push 了两次到同一边不会，但 top 内可能乱序）
+            const dedupe = (list, desc) => {
+                const seen = new Set();
+                const out = [];
+                for (const item of list) {
+                    if (seen.has(item.url))
+                        continue;
+                    seen.add(item.url);
+                    out.push(item);
+                }
+                out.sort((a, b) => desc ? b.pv - a.pv || a.url.localeCompare(b.url) : a.pv - b.pv || a.url.localeCompare(b.url));
+                return out;
+            };
+            return {
+                date: day.date,
+                top: dedupe(day.top, true).slice(0, PV_TOP_N),
+                bottom: dedupe(day.bottom, false).slice(0, PV_BOTTOM_N),
+            };
+        });
         const payload = {
             errors: {
                 total: rowNum('js_errors'),
@@ -249,6 +307,7 @@ statsRouter.get('/', async (req, res) => {
             daily,
             hourly,
             perfByUrl,
+            pvPagesByDay,
         };
         statsCache.set(key, { expires: Date.now() + CACHE_TTL_MS, payload });
         if (statsCache.size > 200) {

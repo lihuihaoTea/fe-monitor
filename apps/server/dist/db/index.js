@@ -183,6 +183,15 @@ export async function initDB() {
       PRIMARY KEY (app_id, date, metric, url)
     );
 
+    -- 行为：按 URL 日 PV（Top10 / 最低页）
+    CREATE TABLE IF NOT EXISTS event_daily_pv_urls (
+      app_id TEXT NOT NULL,
+      date DATE NOT NULL,
+      url TEXT NOT NULL,
+      pv INT NOT NULL DEFAULT 0,
+      PRIMARY KEY (app_id, date, url)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_daily_stats_date
       ON event_daily_stats(date);
     CREATE INDEX IF NOT EXISTS idx_daily_visitors_app_date
@@ -191,16 +200,21 @@ export async function initDB() {
       ON event_hourly_perf(app_id, hour_start);
     CREATE INDEX IF NOT EXISTS idx_daily_perf_urls_lookup
       ON event_daily_perf_urls(app_id, date, metric);
+    CREATE INDEX IF NOT EXISTS idx_daily_pv_urls_lookup
+      ON event_daily_pv_urls(app_id, date);
   `);
     await seedDefaultFilters();
-    // 已有明细但无日聚合 / 无小时聚合时自动回填
+    // 已有明细但缺关键聚合时自动回填
     const dailyCount = await queryOne(`SELECT COUNT(*)::int as count FROM event_daily_stats`);
     const hourlyCount = await queryOne(`SELECT COUNT(*)::int as count FROM event_hourly_perf`);
+    const pvUrlCount = await queryOne(`SELECT COUNT(*)::int as count FROM event_daily_pv_urls`);
     const eventCount = await queryOne(`SELECT COUNT(*)::int as count FROM events`);
     const needRebuild = Number(eventCount?.count) > 0 &&
-        (Number(dailyCount?.count) === 0 || Number(hourlyCount?.count) === 0);
+        (Number(dailyCount?.count) === 0 ||
+            Number(hourlyCount?.count) === 0 ||
+            Number(pvUrlCount?.count) === 0);
     if (needRebuild) {
-        console.log('检测到历史 events 或缺性能聚合，开始重建聚合…');
+        console.log('检测到历史 events 或缺聚合，开始重建…');
         const { rebuildDailyStats } = await import('./dailyStats.js');
         await rebuildDailyStats();
         console.log('聚合重建完成');
