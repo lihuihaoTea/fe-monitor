@@ -236,7 +236,7 @@ pnpm db:rebuild-daily    # 全量重建（事务+锁表，防并发冲突）
 - **主键**: `(app_id, date, url)`
 - **索引**: `idx_daily_pv_urls_lookup (app_id, date)`
 - **Stats API**: 按日窗口函数取访问量最高 Top 10、最低 Bottom 3（仅 `pv > 0`）；`PV_TOP_N` / `PV_BOTTOM_N` 可配
-- **写入**: `behavior/pv` rollup 时 UPSERT `pv = pv + 1`
+- **写入**: `behavior/pv` rollup 时 UPSERT `pv = pv + 1`；URL 经 `normalizePageUrl`（去掉 search 与 `#/path?query` 中的 query，保留 hash 路由）
 
 ---
 

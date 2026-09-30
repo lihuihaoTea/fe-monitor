@@ -98,37 +98,46 @@ function parseData(data: RollupEvent['data']): Record<string, unknown> {
   return {};
 }
 
-/** 去掉 query；保留 pathname；hash 路由保留 #/path 或 #!/path */
+/**
+ * 页面 URL 规范化：
+ * - 去掉 search（?a=1）与 hash 内 query（#/path?a=1 → #/path）
+ * - 保留 hash 路由（#/、#!/）
+ */
 export function normalizePageUrl(raw: string | null | undefined): string {
   const input = (raw || '').trim();
   if (!input) return '(empty)';
-  let normalized = input;
+
+  const stripQueries = (value: string): string => {
+    // 先去掉 # 前的 ?query，再去掉 hash 内 ?query
+    const withoutSearch = value.replace(/[?][^#]*/, '');
+    const hashIdx = withoutSearch.indexOf('#');
+    if (hashIdx < 0) return withoutSearch;
+    const before = withoutSearch.slice(0, hashIdx);
+    const hash = withoutSearch.slice(hashIdx).split('?')[0];
+    if (hash.startsWith('#/') || hash.startsWith('#!/')) {
+      return `${before}${hash}`;
+    }
+    return before;
+  };
+
   try {
     const u = new URL(input);
-    const rawHash = u.hash || '';
-    const hashNoQuery = rawHash.split('?')[0];
+    let hash = u.hash || '';
+    const q = hash.indexOf('?');
+    if (q >= 0) hash = hash.slice(0, q);
     const routeHash =
-      hashNoQuery.startsWith('#/') || hashNoQuery.startsWith('#!/')
-        ? hashNoQuery
-        : '';
-    normalized = `${u.origin}${u.pathname}${routeHash}`;
+      hash.startsWith('#/') || hash.startsWith('#!/') ? hash : '';
+    // pathname 不含 search；显式忽略 u.search
+    let normalized = `${u.origin}${u.pathname}${routeHash}`;
+    // 兜底：再跑一遍通用去参（防异常拼接）
+    normalized = stripQueries(normalized);
+    if (normalized.length > 500) normalized = normalized.slice(0, 500);
+    return normalized || '(empty)';
   } catch {
-    // 非标准 URL：去掉 ?query，尽量保留 #/ 路由
-    const noSearch = input.replace(/\?[^#]*/, '');
-    const hashIdx = noSearch.indexOf('#');
-    if (hashIdx >= 0) {
-      const before = noSearch.slice(0, hashIdx);
-      const hash = noSearch.slice(hashIdx).split('?')[0];
-      normalized =
-        hash.startsWith('#/') || hash.startsWith('#!/')
-          ? `${before}${hash}`
-          : before;
-    } else {
-      normalized = noSearch;
-    }
+    let normalized = stripQueries(input);
+    if (normalized.length > 500) normalized = normalized.slice(0, 500);
+    return normalized || '(empty)';
   }
-  if (normalized.length > 500) normalized = normalized.slice(0, 500);
-  return normalized || '(empty)';
 }
 
 /** @deprecated 使用 normalizePageUrl */
@@ -401,18 +410,21 @@ export async function applyRollupWithClient(
   await upsertHourlyAndUrl(client, event);
 }
 
-/** rebuild 用：与 normalizePageUrl 对齐（保留 #/、#!/ hash 路由） */
+/** rebuild 用：与 normalizePageUrl 对齐（用 [?] 字面量，避免 PG 正则把 ? 当量词） */
 const SQL_NORMALIZE_PAGE_URL = `
   LEFT(
     CASE
       WHEN NULLIF(TRIM(url), '') IS NULL THEN '(empty)'
       WHEN POSITION('#/' IN url) > 0 OR POSITION('#!/' IN url) > 0 THEN
+        -- 1) 去掉 # 前的 ?query  2) 去掉 hash 内 ?query，保留 #/path
         regexp_replace(
-          regexp_replace(TRIM(url), '\\?[^#]*', ''),
-          '(#[^?]*)\\?.*$',
+          regexp_replace(TRIM(url), '[?][^#]*', ''),
+          '(#[^?]*)[?].*$',
           '\\1'
         )
-      ELSE SPLIT_PART(SPLIT_PART(TRIM(url), '?', 1), '#', 1)
+      ELSE
+        -- 非 hash 路由：去掉 query 与普通锚点
+        SPLIT_PART(SPLIT_PART(TRIM(url), '?', 1), '#', 1)
     END,
     500
   )
