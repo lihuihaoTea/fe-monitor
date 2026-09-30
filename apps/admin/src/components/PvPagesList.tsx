@@ -1,39 +1,43 @@
-import { Card, Table, Typography } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
-import type { PvPageRow } from '@/lib/types';
-import { formatNumber } from '@/lib/format';
+import { Card, Table, Typography } from "antd";
+import type { ColumnsType } from "antd/es/table";
+import type { PvPageRow } from "@/lib/types";
+import { formatNumber } from "@/lib/format";
 
 interface PvPagesListProps {
   title: string;
   data: PvPageRow[];
   loading?: boolean;
   /** 默认按 PV 降序（Top）；最低页传 ascend */
-  sort?: 'descend' | 'ascend';
+  sort?: "descend" | "ascend";
 }
 
 export function PvPagesList({
   title,
   data,
   loading,
-  sort = 'descend',
+  sort = "descend",
 }: PvPagesListProps) {
   const total = data.length;
 
   const columns: ColumnsType<PvPageRow> = [
     {
-      title: '页面',
-      dataIndex: 'url',
+      title: "页面",
+      dataIndex: "url",
       ellipsis: true,
       render: (value: string) => (
-        <Typography.Text copyable={{ text: value }} ellipsis={{ tooltip: value }}>
-          {value || '-'}
+        <Typography.Text
+          copyable={{ text: value }}
+          ellipsis={{ tooltip: value }}
+        >
+          {value || "-"}
         </Typography.Text>
       ),
     },
     {
-      title: '访问量 (PV)',
-      dataIndex: 'pv',
+      title: "访问量 (PV)",
+      dataIndex: "pv",
       width: 120,
+      align: "center",
       sorter: (a, b) => a.pv - b.pv,
       defaultSortOrder: sort,
       render: (value: number) => formatNumber(value),
@@ -55,9 +59,9 @@ export function PvPagesList({
         size="small"
         loading={loading}
         pagination={false}
-        scroll={{ x: '100%', y: 320 }}
+        scroll={{ x: "100%", y: 320 }}
         tableLayout="fixed"
-        locale={{ emptyText: '暂无页面数据' }}
+        locale={{ emptyText: "暂无页面数据" }}
         dataSource={data}
         columns={columns}
       />
