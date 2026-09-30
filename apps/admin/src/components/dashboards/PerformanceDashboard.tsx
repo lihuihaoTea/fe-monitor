@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { DatePicker, Spin } from 'antd';
+import { DatePicker } from 'antd';
 import { type Dayjs } from 'dayjs';
 import { MetricSummary } from '@/components/MetricSummary';
 import { CombinedTrendChart } from '@/components/CombinedTrendChart';
@@ -66,10 +66,9 @@ export function PerformanceDashboard() {
   }, [stats?.hourly, hourlyDay]);
 
   return (
-    <Spin spinning={loading}>
-      <div className="monitor-page">
+    <div className="monitor-page">
         <MetricSummary
-          loading={loading && !stats}
+          loading={loading}
           items={[
             {
               title: 'FCP 平均',
@@ -114,7 +113,7 @@ export function PerformanceDashboard() {
           title="性能趋势（按天）"
           data={daily}
           xField="date"
-          loading={loading && !stats}
+          loading={loading}
           series={TREND_SERIES}
         />
 
@@ -122,7 +121,7 @@ export function PerformanceDashboard() {
           title="性能趋势（按小时）"
           data={hourlyOfDay}
           xField="hour"
-          loading={loading && !stats}
+          loading={loading}
           series={TREND_SERIES}
           extra={
             <DatePicker
@@ -145,24 +144,23 @@ export function PerformanceDashboard() {
         <PerformanceUrlTopList
           title="慢页面 Top（FCP）"
           data={perfByUrl.fcp}
-          loading={loading && !stats}
+          loading={loading}
         />
         <PerformanceUrlTopList
           title="慢页面 Top（LCP）"
           data={perfByUrl.lcp}
-          loading={loading && !stats}
+          loading={loading}
         />
         <PerformanceUrlTopList
           title="慢页面 Top（Load）"
           data={perfByUrl.load}
-          loading={loading && !stats}
+          loading={loading}
         />
         <PerformanceUrlTopList
           title="慢页面 Top（DOM Ready）"
           data={perfByUrl.domReady}
-          loading={loading && !stats}
+          loading={loading}
         />
-      </div>
-    </Spin>
+    </div>
   );
 }

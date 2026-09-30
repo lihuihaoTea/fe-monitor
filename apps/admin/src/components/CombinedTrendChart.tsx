@@ -1,7 +1,6 @@
 import { useMemo } from 'react';
-import ReactECharts from 'echarts-for-react';
 import { Card, theme } from 'antd';
-import type { EChartsOption } from 'echarts';
+import EChart, { type ECOption } from '@/components/EChart';
 import { CHART_PALETTE } from '@/lib/chartColors';
 import { formatNumberOrDash } from '@/lib/format';
 
@@ -43,7 +42,7 @@ export function CombinedTrendChart<T>({
     )
     .join('|');
 
-  const option = useMemo<EChartsOption>(() => {
+  const option = useMemo<ECOption>(() => {
     const categories = (data || []).map((d) =>
       String((d as Record<string, unknown>)[xField] ?? '')
     );
@@ -168,7 +167,12 @@ export function CombinedTrendChart<T>({
 
   return (
     <Card className="monitor-card" title={title} extra={extra} loading={loading}>
-      <ReactECharts option={option} style={{ height }} notMerge lazyUpdate />
+      <EChart
+        option={option}
+        height={height}
+        empty={!loading && data.length === 0}
+        setOptionOpts={{ notMerge: true, lazyUpdate: true }}
+      />
     </Card>
   );
 }
