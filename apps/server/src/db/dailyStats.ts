@@ -410,25 +410,32 @@ export async function applyRollupWithClient(
   await upsertHourlyAndUrl(client, event);
 }
 
-/** rebuild 用：与 normalizePageUrl 对齐（用 [?] 字面量，避免 PG 正则把 ? 当量词） */
-const SQL_NORMALIZE_PAGE_URL = `
+/**
+ * rebuild / stats 查询用：与 normalizePageUrl 对齐。
+ * 用 [?] 字面量，避免 PG POSIX 正则把 ? 当量词。
+ * @param col URL 列表达式，默认 `url`
+ */
+export function sqlNormalizePageUrl(col = 'url'): string {
+  return `
   LEFT(
     CASE
-      WHEN NULLIF(TRIM(url), '') IS NULL THEN '(empty)'
-      WHEN POSITION('#/' IN url) > 0 OR POSITION('#!/' IN url) > 0 THEN
-        -- 1) 去掉 # 前的 ?query  2) 去掉 hash 内 ?query，保留 #/path
+      WHEN NULLIF(TRIM(${col}), '') IS NULL THEN '(empty)'
+      WHEN POSITION('#/' IN ${col}) > 0 OR POSITION('#!/' IN ${col}) > 0 THEN
         regexp_replace(
-          regexp_replace(TRIM(url), '[?][^#]*', ''),
+          regexp_replace(TRIM(${col}), '[?][^#]*', ''),
           '(#[^?]*)[?].*$',
           '\\1'
         )
       ELSE
-        -- 非 hash 路由：去掉 query 与普通锚点
-        SPLIT_PART(SPLIT_PART(TRIM(url), '?', 1), '#', 1)
+        SPLIT_PART(SPLIT_PART(TRIM(${col}), '?', 1), '#', 1)
     END,
     500
   )
 `;
+}
+
+/** @deprecated 使用 sqlNormalizePageUrl() */
+const SQL_NORMALIZE_PAGE_URL = sqlNormalizePageUrl('url');
 
 /** 从 events 全量重建日/小时/URL 聚合 */
 export async function rebuildDailyStats(): Promise<void> {
