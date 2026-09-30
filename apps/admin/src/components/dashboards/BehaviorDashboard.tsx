@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { DatePicker, Space, Typography } from 'antd';
 import type { Dayjs } from 'dayjs';
 import { MetricSummary } from '@/components/MetricSummary';
@@ -20,19 +20,17 @@ export function BehaviorDashboard() {
   const rangeEnd = dateRange[1].startOf('day');
   const [pageDay, setPageDay] = useState<Dayjs>(() => rangeEnd);
 
-  useEffect(() => {
-    setPageDay((prev) => {
-      if (prev.isBefore(rangeStart, 'day')) return rangeStart;
-      if (prev.isAfter(rangeEnd, 'day')) return rangeEnd;
-      return prev;
-    });
-  }, [rangeStart, rangeEnd]);
+  const clampedPageDay = useMemo(() => {
+    if (pageDay.isBefore(rangeStart, 'day')) return rangeStart;
+    if (pageDay.isAfter(rangeEnd, 'day')) return rangeEnd;
+    return pageDay;
+  }, [pageDay, rangeStart, rangeEnd]);
 
   const behavior = stats?.behavior;
   const daily = stats?.daily || [];
 
   const dayPages = useMemo(() => {
-    const key = pageDay.format('YYYY-MM-DD');
+    const key = clampedPageDay.format('YYYY-MM-DD');
     return (
       stats?.pvPagesByDay?.find((d) => d.date === key) || {
         date: key,
@@ -40,7 +38,7 @@ export function BehaviorDashboard() {
         bottom: [],
       }
     );
-  }, [stats?.pvPagesByDay, pageDay]);
+  }, [stats?.pvPagesByDay, clampedPageDay]);
 
   return (
     <div className="monitor-page">
@@ -105,7 +103,7 @@ export function BehaviorDashboard() {
           按日页面访问排行（当天有访问的页面；最高 Top 10 / 最低 3）
         </Typography.Text>
         <DatePicker
-          value={pageDay}
+          value={clampedPageDay}
           allowClear={false}
           disabledDate={(current) => {
             if (!current) return false;

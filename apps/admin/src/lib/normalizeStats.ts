@@ -26,13 +26,6 @@ const EMPTY_DAILY: Omit<DailyPoint, 'date'> = {
   clicks: 0,
 };
 
-const EMPTY_PERF: PerfMetricSummary = {
-  avg: 0,
-  min: 0,
-  max: 0,
-  count: 0,
-};
-
 function toNumber(value: unknown): number {
   const n = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(n) ? n : 0;

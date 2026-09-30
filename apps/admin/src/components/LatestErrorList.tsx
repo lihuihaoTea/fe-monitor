@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Badge,
   Card,
@@ -60,8 +60,6 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
   const [pageCursors, setPageCursors] = useState<
     Array<{ cursorTs: number; cursorId: number } | null>
   >([null]);
-  const pageCursorsRef = useRef(pageCursors);
-  pageCursorsRef.current = pageCursors;
   const [subType, setSubType] = useState<string | undefined>();
   const [messageKeyword, setMessageKeyword] = useState("");
   const [urlKeyword, setUrlKeyword] = useState("");
@@ -93,7 +91,7 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
     },
   });
 
-  const cursor = page > 1 ? pageCursorsRef.current[page - 1] : null;
+  const cursor = page > 1 ? pageCursors[page - 1] ?? null : null;
 
   const { data: listResult, isFetching } = useQuery({
     queryKey: queryKeys.events({
@@ -139,15 +137,18 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
     },
   });
 
-  useEffect(() => {
-    if (!listResult?.nextCursor) return;
-    setPageCursors((prev) => {
-      const next = prev.slice();
-      while (next.length < page) next.push(null);
-      next[page] = listResult.nextCursor!;
-      return next;
-    });
-  }, [listResult?.nextCursor, page]);
+  const nextCursor = listResult?.nextCursor ?? null;
+  const storedCursor = pageCursors[page] ?? null;
+  if (
+    nextCursor &&
+    (storedCursor?.cursorTs !== nextCursor.cursorTs ||
+      storedCursor?.cursorId !== nextCursor.cursorId)
+  ) {
+    const next = pageCursors.slice();
+    while (next.length < page) next.push(null);
+    next[page] = nextCursor;
+    setPageCursors(next);
+  }
 
   // 关键词输入防抖；变更时回到第 1 页
   useEffect(() => {

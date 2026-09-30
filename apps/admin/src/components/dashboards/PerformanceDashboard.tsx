@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { DatePicker } from 'antd';
 import { type Dayjs } from 'dayjs';
 import { MetricSummary } from '@/components/MetricSummary';
@@ -33,14 +33,11 @@ export function PerformanceDashboard() {
 
   const [hourlyDay, setHourlyDay] = useState<Dayjs>(() => rangeEnd);
 
-  // 全局日期范围变化时，把小时图选中日钳制到范围内（默认取结束日）
-  useEffect(() => {
-    setHourlyDay((prev) => {
-      if (prev.isBefore(rangeStart, 'day')) return rangeStart;
-      if (prev.isAfter(rangeEnd, 'day')) return rangeEnd;
-      return prev;
-    });
-  }, [rangeStart, rangeEnd]);
+  const clampedHourlyDay = useMemo(() => {
+    if (hourlyDay.isBefore(rangeStart, 'day')) return rangeStart;
+    if (hourlyDay.isAfter(rangeEnd, 'day')) return rangeEnd;
+    return hourlyDay;
+  }, [hourlyDay, rangeStart, rangeEnd]);
 
   const performance = stats?.performance ?? {
     fcp: { avg: 0, min: 0, max: 0, count: 0 },
@@ -57,13 +54,13 @@ export function PerformanceDashboard() {
   };
 
   const hourlyOfDay = useMemo(() => {
-    const filled = fillHourlyRange(stats?.hourly, hourlyDay);
+    const filled = fillHourlyRange(stats?.hourly, clampedHourlyDay);
     // X 轴只展示 HH:00，避免整天标签过长
     return filled.map((point) => ({
       ...point,
       hour: point.hour.slice(11, 16) || point.hour,
     }));
-  }, [stats?.hourly, hourlyDay]);
+  }, [stats?.hourly, clampedHourlyDay]);
 
   return (
     <div className="monitor-page">
@@ -125,7 +122,7 @@ export function PerformanceDashboard() {
           series={TREND_SERIES}
           extra={
             <DatePicker
-              value={hourlyDay}
+              value={clampedHourlyDay}
               allowClear={false}
               disabledDate={(current) => {
                 if (!current) return false;

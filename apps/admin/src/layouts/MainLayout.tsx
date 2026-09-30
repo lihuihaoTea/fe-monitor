@@ -1,5 +1,5 @@
-import { useMemo } from 'react';
-import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { useMemo } from "react";
+import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Button,
   DatePicker,
@@ -9,35 +9,35 @@ import {
   Space,
   theme,
   Typography,
-} from 'antd';
+} from "antd";
 import {
   DashboardOutlined,
   AlertOutlined,
   TeamOutlined,
   ReloadOutlined,
-} from '@ant-design/icons';
-import type { Dayjs } from 'dayjs';
-import { APP_OPTIONS, APP_THEME_COLORS, type AppId } from '@/lib/constants';
-import { useFilters } from '@/hooks/useFilters';
+} from "@ant-design/icons";
+import type { Dayjs } from "dayjs";
+import { APP_OPTIONS, APP_THEME_COLORS, type AppId } from "@/lib/constants";
+import { useFilters } from "@/hooks/useFilters";
 
 const { Header, Content } = Layout;
 const { RangePicker } = DatePicker;
 
 const NAV_ITEMS = [
-  { key: '/stability', label: '稳定性看板', icon: <AlertOutlined /> },
-  { key: '/performance', label: '性能看板', icon: <DashboardOutlined /> },
-  { key: '/behavior', label: '用户行为看板', icon: <TeamOutlined /> },
+  { key: "/stability", label: "稳定性看板", icon: <AlertOutlined /> },
+  { key: "/performance", label: "性能看板", icon: <DashboardOutlined /> },
+  { key: "/behavior", label: "用户行为看板", icon: <TeamOutlined /> },
 ];
 
 const APP_SELECT_OPTIONS = APP_OPTIONS.map((opt) => ({
   value: opt.value,
   label: (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
       <span
         style={{
           width: 8,
           height: 8,
-          borderRadius: '50%',
+          borderRadius: "50%",
           background: APP_THEME_COLORS[opt.value],
           flexShrink: 0,
         }}
@@ -57,28 +57,23 @@ export function MainLayout() {
 
   const selectedKey = useMemo(() => {
     const match = NAV_ITEMS.find((item) => pathname.startsWith(item.key));
-    return match?.key || '/stability';
+    return match?.key || "/stability";
   }, [pathname]);
-
-  const pageTitle = useMemo(
-    () => NAV_ITEMS.find((item) => item.key === selectedKey)?.label || '监控看板',
-    [selectedKey]
-  );
 
   return (
     <Layout className="app-layout">
       <Header
         className="app-header"
         style={{
-          display: 'flex',
-          alignItems: 'center',
+          display: "flex",
+          alignItems: "center",
           gap: 20,
           paddingInline: 24,
           height: 56,
-          lineHeight: '56px',
+          lineHeight: "56px",
           background: token.colorBgContainer,
           borderBottom: `1px solid ${token.colorBorderSecondary}`,
-          boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+          boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
           zIndex: 100,
         }}
       >
@@ -86,7 +81,7 @@ export function MainLayout() {
           level={4}
           style={{
             margin: 0,
-            whiteSpace: 'nowrap',
+            whiteSpace: "nowrap",
             fontSize: 17,
             letterSpacing: 0.2,
             color: token.colorPrimary,
@@ -103,9 +98,9 @@ export function MainLayout() {
           style={{
             flex: 1,
             minWidth: 0,
-            border: 'none',
-            background: 'transparent',
-            lineHeight: '54px',
+            border: "none",
+            background: "transparent",
+            lineHeight: "54px",
           }}
         />
 
@@ -137,24 +132,11 @@ export function MainLayout() {
         </Space>
       </Header>
 
-      <Content className="app-content" style={{ background: token.colorBgLayout }}>
+      <Content
+        className="app-content"
+        style={{ background: token.colorBgLayout }}
+      >
         <div className="app-content-inner">
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'baseline',
-              justifyContent: 'space-between',
-              marginBottom: 16,
-            }}
-          >
-            <Typography.Title level={4} style={{ margin: 0, fontWeight: 600 }}>
-              {pageTitle}
-            </Typography.Title>
-            <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-              {dateRange[0].format('YYYY-MM-DD')} ~{' '}
-              {dateRange[1].format('YYYY-MM-DD')}
-            </Typography.Text>
-          </div>
           <Outlet />
         </div>
       </Content>

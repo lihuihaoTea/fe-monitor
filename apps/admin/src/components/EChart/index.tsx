@@ -79,9 +79,11 @@ const EChart = forwardRef<EChartRef, EChartProps>(function EChart(
   const setOptionOptsRef = useRef(setOptionOpts);
   const onEventsRef = useRef(onEvents);
 
-  onChartReadyRef.current = onChartReady;
-  setOptionOptsRef.current = setOptionOpts;
-  onEventsRef.current = onEvents;
+  useEffect(() => {
+    onChartReadyRef.current = onChartReady;
+    setOptionOptsRef.current = setOptionOpts;
+    onEventsRef.current = onEvents;
+  });
 
   useImperativeHandle(ref, () => ({
     getInstance: () => chartRef.current,
