@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { query, queryOne } from '../db/index.js';
+import { normalizePageUrl, sqlNormalizePageUrl, } from '../db/dailyStats.js';
 import { parseRangeBound } from './eventQuery.js';
 export const statsRouter = Router();
 const n = (v) => Number(v) || 0;
@@ -141,29 +142,42 @@ statsRouter.get('/', async (req, res) => {
              AND hour_start >= ?::timestamp
              AND hour_start <= ?::timestamp
            ORDER BY hour_start ASC`, [appId, hourStart, hourEnd]),
-            query(`SELECT metric, url,
+            query(`SELECT metric, page_url as url,
              SUM(value_sum)::bigint as value_sum,
              SUM(value_count)::int as value_count,
              MIN(value_min) as value_min,
              MAX(value_max) as value_max
-           FROM event_daily_perf_urls
-           WHERE app_id = ? AND date >= ?::date AND date <= ?::date
-           GROUP BY metric, url`, dayParams),
-            // 按日取 TopN / BottomN（窗口函数，避免拉全量 URL）
-            query(`WITH ranked AS (
+           FROM (
+             SELECT metric,
+               ${sqlNormalizePageUrl('url')} as page_url,
+               value_sum, value_count, value_min, value_max
+             FROM event_daily_perf_urls
+             WHERE app_id = ? AND date >= ?::date AND date <= ?::date
+           ) t
+           GROUP BY metric, page_url`, dayParams),
+            // 先规范化 URL 再按日聚合，再取 TopN / BottomN（兼容历史脏数据）
+            query(`WITH normalized AS (
              SELECT
-               to_char(date, 'YYYY-MM-DD') as date,
-               url,
-               pv,
-               ROW_NUMBER() OVER (
-                 PARTITION BY date ORDER BY pv DESC, url ASC
-               ) as rn_desc,
-               ROW_NUMBER() OVER (
-                 PARTITION BY date ORDER BY pv ASC, url ASC
-               ) as rn_asc
+               date,
+               ${sqlNormalizePageUrl('url')} as page_url,
+               SUM(pv)::int as pv
              FROM event_daily_pv_urls
              WHERE app_id = ? AND date >= ?::date AND date <= ?::date
                AND pv > 0
+             GROUP BY date, page_url
+           ),
+           ranked AS (
+             SELECT
+               to_char(date, 'YYYY-MM-DD') as date,
+               page_url as url,
+               pv,
+               ROW_NUMBER() OVER (
+                 PARTITION BY date ORDER BY pv DESC, page_url ASC
+               ) as rn_desc,
+               ROW_NUMBER() OVER (
+                 PARTITION BY date ORDER BY pv ASC, page_url ASC
+               ) as rn_asc
+             FROM normalized
            )
            SELECT date, url, pv, rn_desc, rn_asc
            FROM ranked
@@ -232,7 +246,7 @@ statsRouter.get('/', async (req, res) => {
             if (!count)
                 continue;
             bucket.push({
-                url: row.url,
+                url: normalizePageUrl(row.url),
                 avg: avg(n(row.value_sum), count),
                 min: nOrNull(row.value_min) ?? 0,
                 max: nOrNull(row.value_max) ?? 0,
@@ -251,7 +265,7 @@ statsRouter.get('/', async (req, res) => {
                 bucket = { date, top: [], bottom: [] };
                 pvPagesByDayMap.set(date, bucket);
             }
-            const item = { url: row.url, pv: n(row.pv) };
+            const item = { url: normalizePageUrl(row.url), pv: n(row.pv) };
             if (n(row.rn_desc) <= PV_TOP_N)
                 bucket.top.push(item);
             if (n(row.rn_asc) <= PV_BOTTOM_N)
