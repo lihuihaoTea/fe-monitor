@@ -1,5 +1,5 @@
 import type { PoolClient } from 'pg';
-import { clientQuery, execute } from './index.js';
+import { clientQuery, execute, withTransaction } from './index.js';
 
 /** 与 Node 进程本地时区一致的 YYYY-MM-DD（对齐 PG to_char(to_timestamp(...))） */
 export function dayKeyFromMs(ms: number): string {
@@ -226,79 +226,83 @@ export async function applyRollupWithClient(
 
 /** 从 events 全量重建日聚合（SQL 聚合，快） */
 export async function rebuildDailyStats(): Promise<void> {
-  await execute(`TRUNCATE event_daily_stats, event_daily_error_types, event_daily_visitors`);
+  await withTransaction(async (client) => {
+    // 锁表防止并发写入导致主键冲突
+    await client.query(`LOCK TABLE event_daily_stats, event_daily_error_types, event_daily_visitors IN ACCESS EXCLUSIVE MODE`);
+    await client.query(`TRUNCATE event_daily_stats, event_daily_error_types, event_daily_visitors`);
 
-  await execute(`
-    INSERT INTO event_daily_stats (
-      app_id, date,
-      js_errors, resource_errors, api_errors, blank_screens,
-      not_found_404, other_issues, pv, clicks,
-      stay_duration_sum, stay_count,
-      fcp_sum, fcp_count, lcp_sum, lcp_count,
-      load_sum, load_count, dom_ready_sum, dom_ready_count
-    )
-    SELECT
-      app_id,
-      to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date as date,
-      COUNT(*) FILTER (WHERE type = 'error' AND sub_type IN ('js', 'promise'))::int,
-      COUNT(*) FILTER (WHERE type = 'resource')::int,
-      COUNT(*) FILTER (WHERE type = 'api')::int,
-      COUNT(*) FILTER (WHERE type = 'blank')::int,
-      COUNT(*) FILTER (
-        WHERE type = 'error' AND (
-          sub_type = '404' OR (data->>'message') = '404'
-        )
-      )::int,
-      COUNT(*) FILTER (
-        WHERE type = 'error' AND (
-          sub_type IS NULL OR sub_type NOT IN ('js', 'promise')
-        )
-      )::int,
-      COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'pv')::int,
-      COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
-        THEN (data->>'clickCount')::int ELSE 0 END), 0)::int,
-      COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
-        THEN (data->>'duration')::bigint ELSE 0 END), 0)::bigint,
-      COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'stay'
-        AND (data->>'duration') IS NOT NULL)::int,
-      COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'fcp'
-        THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
-      COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'fcp')::int,
-      COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'lcp'
-        THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
-      COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'lcp')::int,
-      COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'load'
-        THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
-      COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'load')::int,
-      COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'load'
-        THEN (data->>'domReady')::bigint ELSE 0 END), 0)::bigint,
-      COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'load'
-        AND data->>'domReady' IS NOT NULL)::int
-    FROM events
-    GROUP BY app_id, to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')
-  `);
+    await clientQuery(client, `
+      INSERT INTO event_daily_stats (
+        app_id, date,
+        js_errors, resource_errors, api_errors, blank_screens,
+        not_found_404, other_issues, pv, clicks,
+        stay_duration_sum, stay_count,
+        fcp_sum, fcp_count, lcp_sum, lcp_count,
+        load_sum, load_count, dom_ready_sum, dom_ready_count
+      )
+      SELECT
+        app_id,
+        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date as date,
+        COUNT(*) FILTER (WHERE type = 'error' AND sub_type IN ('js', 'promise'))::int,
+        COUNT(*) FILTER (WHERE type = 'resource')::int,
+        COUNT(*) FILTER (WHERE type = 'api')::int,
+        COUNT(*) FILTER (WHERE type = 'blank')::int,
+        COUNT(*) FILTER (
+          WHERE type = 'error' AND (
+            sub_type = '404' OR (data->>'message') = '404'
+          )
+        )::int,
+        COUNT(*) FILTER (
+          WHERE type = 'error' AND (
+            sub_type IS NULL OR sub_type NOT IN ('js', 'promise')
+          )
+        )::int,
+        COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'pv')::int,
+        COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
+          THEN (data->>'clickCount')::int ELSE 0 END), 0)::int,
+        COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
+          THEN (data->>'duration')::bigint ELSE 0 END), 0)::bigint,
+        COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'stay'
+          AND (data->>'duration') IS NOT NULL)::int,
+        COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'fcp'
+          THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
+        COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'fcp')::int,
+        COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'lcp'
+          THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
+        COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'lcp')::int,
+        COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'load'
+          THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
+        COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'load')::int,
+        COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'load'
+          THEN (data->>'domReady')::bigint ELSE 0 END), 0)::bigint,
+        COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'load'
+          AND data->>'domReady' IS NOT NULL)::int
+      FROM events
+      GROUP BY app_id, to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')
+    `, []);
 
-  await execute(`
-    INSERT INTO event_daily_error_types (app_id, date, sub_type, count)
-    SELECT
-      app_id,
-      to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
-      COALESCE(NULLIF(TRIM(sub_type), ''), 'manual'),
-      COUNT(*)::int
-    FROM events
-    WHERE type = 'error'
-    GROUP BY 1, 2, 3
-  `);
+    await clientQuery(client, `
+      INSERT INTO event_daily_error_types (app_id, date, sub_type, count)
+      SELECT
+        app_id,
+        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
+        COALESCE(NULLIF(TRIM(sub_type), ''), 'manual'),
+        COUNT(*)::int
+      FROM events
+      WHERE type = 'error'
+      GROUP BY 1, 2, 3
+    `, []);
 
-  await execute(`
-    INSERT INTO event_daily_visitors (app_id, date, visitor_id)
-    SELECT DISTINCT
-      app_id,
-      to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
-      visitor_id
-    FROM events
-    WHERE type = 'behavior' AND sub_type = 'pv'
-      AND visitor_id IS NOT NULL AND TRIM(visitor_id) != ''
-    ON CONFLICT DO NOTHING
-  `);
+    await clientQuery(client, `
+      INSERT INTO event_daily_visitors (app_id, date, visitor_id)
+      SELECT DISTINCT
+        app_id,
+        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
+        visitor_id
+      FROM events
+      WHERE type = 'behavior' AND sub_type = 'pv'
+        AND visitor_id IS NOT NULL AND TRIM(visitor_id) != ''
+      ON CONFLICT DO NOTHING
+    `, []);
+  });
 }
