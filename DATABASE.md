@@ -1,7 +1,7 @@
 # fe-monitor 数据库设计文档
 
 > 本文档供开发 Agent 使用，描述当前 PostgreSQL 数据库的表结构、索引、约束及业务逻辑。
-> 最后更新：2026-09-30
+> 最后更新：2026-09-30（性能：日 min/max + 小时聚合 + URL Top N）
 
 ## 连接信息
 
@@ -23,9 +23,11 @@ DATABASE_URL=postgresql://monitor:monitor@localhost:5432/fe_monitor
 |------|-----------|------|------|
 | `events` | ~186万 | 895 MB | 原始事件存储（核心事实表） |
 | `event_filters` | 49 | 16 kB | 事件过滤规则配置 |
-| `event_daily_stats` | 25 | 88 kB | 按日聚合的统计指标 |
-| `event_daily_error_types` | 48 | 16 kB | 按日聚合的错误子类型计数 |
+| `event_daily_stats` | 按 app×日 | 小 | 按日聚合的统计指标（含性能 avg/min/max） |
+| `event_daily_error_types` | 按 app×日×子类型 | 小 | 按日聚合的错误子类型计数 |
 | `event_daily_visitors` | ~3.1万 | 2 MB | 按日去重访客记录 |
+| `event_hourly_perf` | 按 app×小时×指标 | 小 | 性能小时聚合（一天内趋势） |
+| `event_daily_perf_urls` | 按 app×日×指标×URL | 中 | 性能按 URL 日聚合（Top N 下钻） |
 
 ---
 
@@ -138,12 +140,17 @@ pnpm db:filters -- remove --id <id>
 | stay_duration_sum | bigint | 0 | 停留时长总和（ms） |
 | stay_count | integer | 0 | 停留记录数 |
 | fcp_sum / fcp_count | bigint/int | 0 | FCP 总和/计数 |
+| fcp_min / fcp_max | bigint | NULL | FCP 当日最小/最大（无样本为 NULL） |
 | lcp_sum / lcp_count | bigint/int | 0 | LCP 总和/计数 |
+| lcp_min / lcp_max | bigint | NULL | LCP 当日最小/最大 |
 | load_sum / load_count | bigint/int | 0 | Load 总和/计数 |
+| load_min / load_max | bigint | NULL | Load 当日最小/最大 |
 | dom_ready_sum / dom_ready_count | bigint/int | 0 | DOM Ready 总和/计数 |
+| dom_ready_min / dom_ready_max | bigint | NULL | DOM Ready 当日最小/最大 |
 
 - **主键**: `(app_id, date)`
 - **索引**: `idx_daily_stats_date (date)` — 按日期范围查询
+- **区间汇总**：`SUM(sum)/SUM(count)` 得平均；`MIN(min)` / `MAX(max)` 得区间极值
 
 #### 重建命令
 
@@ -151,7 +158,7 @@ pnpm db:filters -- remove --id <id>
 pnpm db:rebuild-daily    # 全量重建（事务+锁表，防并发冲突）
 ```
 
-> ⚠️ 重建会 TRUNCATE 三张聚合表后重新 INSERT，执行期间阻塞所有写入。
+> ⚠️ 重建会 TRUNCATE **全部聚合表**（日统计、错误类型、访客、小时性能、URL 性能）后重新 INSERT，执行期间阻塞所有写入。
 
 ---
 
@@ -181,6 +188,41 @@ pnpm db:rebuild-daily    # 全量重建（事务+锁表，防并发冲突）
 
 ---
 
+### 6. event_hourly_perf（性能小时聚合）
+
+| 列名 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| app_id | text | - | 应用 ID |
+| hour_start | timestamp | - | 本地时区整点（无时区） |
+| metric | text | - | `fcp` / `lcp` / `load` / `dom_ready` |
+| value_sum | bigint | 0 | 该小时该指标总和（ms） |
+| value_count | int | 0 | 样本数 |
+| value_min / value_max | bigint | NULL | 最小/最大 |
+
+- **主键**: `(app_id, hour_start, metric)`
+- **索引**: `idx_hourly_perf_app_hour (app_id, hour_start)`
+- **用途**: 性能看板「选中单日」时按小时画趋势；写入时与日聚合同事务增量 UPSERT
+
+---
+
+### 7. event_daily_perf_urls（性能按 URL 日聚合 / Top N）
+
+| 列名 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| app_id | text | - | 应用 ID |
+| date | date | - | 日期 |
+| metric | text | - | `fcp` / `lcp` / `load` / `dom_ready` |
+| url | text | - | 规范化 URL（去 query/hash，最长 500） |
+| value_sum | bigint | 0 | 总和（ms） |
+| value_count | int | 0 | 样本数 |
+| value_min / value_max | bigint | NULL | 最小/最大 |
+
+- **主键**: `(app_id, date, metric, url)`
+- **索引**: `idx_daily_perf_urls_lookup (app_id, date, metric)`
+- **Stats API**: 区间内按 URL 聚合后按 `avg` 降序取 Top N（默认 20，环境变量 `PERF_URL_TOP_N`）
+
+---
+
 ## 关键注意事项（给开发 Agent）
 
 ### 1. SQL 别名必须使用小写/下划线
@@ -203,13 +245,13 @@ pnpm db:rebuild-daily                  # 重建聚合数据
 ```
 
 ### 3. rebuild-daily 必须在事务中执行
-`TRUNCATE` + `INSERT` 必须在同一事务内完成并加 `ACCESS EXCLUSIVE` 锁，否则 PM2 并发写入会导致主键冲突。已封装在 `withTransaction` 中，**不要拆分为独立 execute() 调用**。
+`TRUNCATE` + `INSERT` 必须在同一事务内完成并加 `ACCESS EXCLUSIVE` 锁，否则 PM2 并发写入会导致主键冲突。已封装在 `withTransaction` 中，**不要拆分为独立 execute() 调用**。锁表范围含 `event_hourly_perf`、`event_daily_perf_urls`。
 
 ### 4. clean-filtered 采用分批处理
 每批读取 1000 条（基于 id 游标分页），避免 895MB 大表全量加载导致 OOM。
 
 ### 5. initDB 包含建表和种子数据
-`initDB()` 会自动 CREATE TABLE IF NOT EXISTS 并插入默认过滤规则（Clarity、抖音 CDN）。首次启动无需手动建表。
+`initDB()` 会自动 CREATE TABLE IF NOT EXISTS、ALTER 补齐性能 min/max 列，并插入默认过滤规则。若存在 events 但日聚合或小时聚合为空，会自动 `rebuildDailyStats()`。
 
 ### 6. 事件类型枚举
 | type | sub_type 可选值 | 说明 |
@@ -218,5 +260,12 @@ pnpm db:rebuild-daily                  # 重建聚合数据
 | api | - | API 请求失败 |
 | resource | - | 资源加载失败 |
 | behavior | pv, stay | 用户行为 |
-| performance | fcp, lcp, load | 性能指标 |
+| performance | fcp, lcp, load | 性能指标（domReady 嵌在 load.data） |
 | blank | - | 白屏检测 |
+
+### 7. 性能看板读路径
+- 汇总 avg/min/max：`event_daily_stats`
+- 跨天趋势：日表 avg
+- 单日趋势：`event_hourly_perf`
+- 慢页面 Top N：`event_daily_perf_urls`
+- 不再依赖 `events` 明细列表展示性能采样（明细仍可上报入库，供 rebuild）

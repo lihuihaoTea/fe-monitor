@@ -54,6 +54,7 @@ export function StabilityDashboard() {
         <CombinedTrendChart
           title="稳定性趋势"
           data={daily}
+          xField="date"
           loading={listLoading}
           series={[
             { name: 'JS 错误', field: 'errors' },

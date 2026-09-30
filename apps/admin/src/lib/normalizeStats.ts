@@ -1,5 +1,12 @@
 import type { Dayjs } from 'dayjs';
-import type { DailyPoint, LatestErrorItem, StatsResponse } from './types';
+import type {
+  DailyPoint,
+  HourlyPoint,
+  LatestErrorItem,
+  PerfMetricSummary,
+  PerfUrlRow,
+  StatsResponse,
+} from './types';
 
 const EMPTY_DAILY: Omit<DailyPoint, 'date'> = {
   pv: 0,
@@ -18,9 +25,42 @@ const EMPTY_DAILY: Omit<DailyPoint, 'date'> = {
   clicks: 0,
 };
 
+const EMPTY_PERF: PerfMetricSummary = {
+  avg: 0,
+  min: 0,
+  max: 0,
+  count: 0,
+};
+
 function toNumber(value: unknown): number {
   const n = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+function normalizePerfMetric(raw: unknown): PerfMetricSummary {
+  if (raw && typeof raw === 'object' && 'avg' in (raw as object)) {
+    const o = raw as Partial<PerfMetricSummary>;
+    return {
+      avg: toNumber(o.avg),
+      min: toNumber(o.min),
+      max: toNumber(o.max),
+      count: toNumber(o.count),
+    };
+  }
+  // 兼容旧扁平 number
+  const avg = toNumber(raw);
+  return { avg, min: 0, max: 0, count: avg > 0 ? 1 : 0 };
+}
+
+function normalizeUrlRows(raw: unknown): PerfUrlRow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => ({
+    url: String((item as PerfUrlRow)?.url || ''),
+    avg: toNumber((item as PerfUrlRow)?.avg),
+    min: toNumber((item as PerfUrlRow)?.min),
+    max: toNumber((item as PerfUrlRow)?.max),
+    count: toNumber((item as PerfUrlRow)?.count),
+  }));
 }
 
 function normalizeDailyPoint(
@@ -71,6 +111,40 @@ export function fillDailyRange(
   return result;
 }
 
+/** 单日按小时补齐 0~23 */
+export function fillHourlyRange(
+  hourly: Array<Partial<HourlyPoint>> | undefined,
+  day: Dayjs
+): HourlyPoint[] {
+  const dayKey = day.format('YYYY-MM-DD');
+  const map = new Map<string, HourlyPoint>();
+  for (const item of hourly || []) {
+    if (!item?.hour) continue;
+    map.set(item.hour, {
+      hour: item.hour,
+      fcp: toNumber(item.fcp),
+      lcp: toNumber(item.lcp),
+      load: toNumber(item.load),
+      domReady: toNumber(item.domReady),
+    });
+  }
+
+  const result: HourlyPoint[] = [];
+  for (let h = 0; h < 24; h++) {
+    const label = `${dayKey} ${String(h).padStart(2, '0')}:00`;
+    result.push(
+      map.get(label) || {
+        hour: label,
+        fcp: 0,
+        lcp: 0,
+        load: 0,
+        domReady: 0,
+      }
+    );
+  }
+  return result;
+}
+
 export function normalizeLatestItem(item: Partial<LatestErrorItem>): LatestErrorItem {
   return {
     id: toNumber(item.id),
@@ -90,7 +164,8 @@ export function normalizeStats(
   start: Dayjs,
   end: Dayjs
 ): StatsResponse {
-  const performanceRaw = raw?.performance || {};
+  const performanceRaw = raw?.performance || ({} as StatsResponse['performance']);
+  const singleDay = start.format('YYYY-MM-DD') === end.format('YYYY-MM-DD');
 
   return {
     errors: {
@@ -108,10 +183,10 @@ export function normalizeStats(
       otherIssues: toNumber(raw?.stability?.otherIssues),
     },
     performance: {
-      fcp: toNumber(performanceRaw.fcp),
-      lcp: toNumber(performanceRaw.lcp),
-      load: toNumber(performanceRaw.load),
-      domReady: toNumber(performanceRaw.domReady),
+      fcp: normalizePerfMetric(performanceRaw.fcp),
+      lcp: normalizePerfMetric(performanceRaw.lcp),
+      load: normalizePerfMetric(performanceRaw.load),
+      domReady: normalizePerfMetric(performanceRaw.domReady),
     },
     behavior: {
       pv: toNumber(raw?.behavior?.pv),
@@ -120,6 +195,21 @@ export function normalizeStats(
       totalClicks: toNumber(raw?.behavior?.totalClicks),
     },
     daily: fillDailyRange(raw?.daily, start, end),
+    hourly: singleDay
+      ? fillHourlyRange(raw?.hourly, start)
+      : (raw?.hourly || []).map((item) => ({
+          hour: item.hour || '',
+          fcp: toNumber(item.fcp),
+          lcp: toNumber(item.lcp),
+          load: toNumber(item.load),
+          domReady: toNumber(item.domReady),
+        })),
+    perfByUrl: {
+      fcp: normalizeUrlRows(raw?.perfByUrl?.fcp),
+      lcp: normalizeUrlRows(raw?.perfByUrl?.lcp),
+      load: normalizeUrlRows(raw?.perfByUrl?.load),
+      domReady: normalizeUrlRows(raw?.perfByUrl?.domReady),
+    },
   };
 }
 

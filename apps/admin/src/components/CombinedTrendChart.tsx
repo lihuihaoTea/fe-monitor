@@ -2,39 +2,36 @@ import { useMemo } from 'react';
 import ReactECharts from 'echarts-for-react';
 import { Card, theme } from 'antd';
 import type { EChartsOption } from 'echarts';
-import type { DailyPoint } from '@/lib/types';
 import { CHART_PALETTE } from '@/lib/chartColors';
 import { formatNumberOrDash } from '@/lib/format';
 
-export type CombinedSeries = {
+export type CombinedSeries<T> = {
   name: string;
-  field: keyof DailyPoint;
-  /** 使用右侧 Y 轴（适合量纲不同的指标） */
+  field: keyof T & string;
   yAxisIndex?: 0 | 1;
   unit?: string;
-  /** 右侧 Y 轴名称，缺省取 unit */
   yAxisName?: string;
-  /** tooltip 小数位数 */
   precision?: number;
-  /** 原始值转换（如 ms → min） */
   transform?: (value: number) => number;
 };
 
-interface CombinedTrendChartProps {
+interface CombinedTrendChartProps<T> {
   title: string;
-  data: DailyPoint[];
-  series: CombinedSeries[];
+  data: T[];
+  xField: keyof T & string;
+  series: CombinedSeries<T>[];
   loading?: boolean;
   height?: number;
 }
 
-export function CombinedTrendChart({
+export function CombinedTrendChart<T>({
   title,
   data,
+  xField,
   series,
   loading,
   height = 360,
-}: CombinedTrendChartProps) {
+}: CombinedTrendChartProps<T>) {
   const { token } = theme.useToken();
   const seriesKey = series
     .map(
@@ -44,7 +41,9 @@ export function CombinedTrendChart({
     .join('|');
 
   const option = useMemo<EChartsOption>(() => {
-    const dates = (data || []).map((d) => d.date);
+    const categories = (data || []).map((d) =>
+      String((d as Record<string, unknown>)[xField] ?? '')
+    );
     const rightSeries = series.find((s) => s.yAxisIndex === 1);
     const hasRightAxis = Boolean(rightSeries);
     const rightAxisName =
@@ -87,7 +86,7 @@ export function CombinedTrendChart({
       xAxis: {
         type: 'category',
         boundaryGap: false,
-        data: dates,
+        data: categories,
         axisLine: { lineStyle: { color: token.colorBorderSecondary } },
         axisTick: { show: false },
         axisLabel: { hideOverlap: true, color: axisLabelColor, fontSize: 11 },
@@ -138,7 +137,7 @@ export function CombinedTrendChart({
         lineStyle: { width: 2.5 },
         yAxisIndex: s.yAxisIndex ?? 0,
         data: (data || []).map((d) => {
-          const raw = Number(d[s.field]) || 0;
+          const raw = Number((d as Record<string, unknown>)[s.field]) || 0;
           const value = s.transform ? s.transform(raw) : raw;
           return Number.isFinite(value) ? value : 0;
         }),
@@ -153,7 +152,16 @@ export function CombinedTrendChart({
       })),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, seriesKey, token.colorText, token.colorTextSecondary, token.colorTextTertiary, token.colorSplit, token.colorBorderSecondary]);
+  }, [
+    data,
+    xField,
+    seriesKey,
+    token.colorText,
+    token.colorTextSecondary,
+    token.colorTextTertiary,
+    token.colorSplit,
+    token.colorBorderSecondary,
+  ]);
 
   return (
     <Card className="monitor-card" title={title} loading={loading}>

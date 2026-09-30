@@ -53,6 +53,7 @@ export function BehaviorDashboard() {
         <CombinedTrendChart
           title="行为趋势"
           data={daily}
+          xField="date"
           loading={loading && !stats}
           series={[
             { name: 'PV', field: 'pv' },

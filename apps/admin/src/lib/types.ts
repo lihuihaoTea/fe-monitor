@@ -12,6 +12,29 @@ export interface LatestErrorItem {
 
 export type EventCategory = 'js' | 'resource' | 'api' | 'other' | 'performance';
 
+export interface PerfMetricSummary {
+  avg: number;
+  min: number;
+  max: number;
+  count: number;
+}
+
+export interface PerfUrlRow {
+  url: string;
+  avg: number;
+  min: number;
+  max: number;
+  count: number;
+}
+
+export interface HourlyPoint {
+  hour: string;
+  fcp: number;
+  lcp: number;
+  load: number;
+  domReady: number;
+}
+
 export interface StatsResponse {
   errors: {
     total: number;
@@ -24,7 +47,12 @@ export interface StatsResponse {
     notFound404: number;
     otherIssues: number;
   };
-  performance: Record<string, number>;
+  performance: {
+    fcp: PerfMetricSummary;
+    lcp: PerfMetricSummary;
+    load: PerfMetricSummary;
+    domReady: PerfMetricSummary;
+  };
   behavior: {
     pv: number;
     uv: number;
@@ -32,6 +60,13 @@ export interface StatsResponse {
     totalClicks: number;
   };
   daily: DailyPoint[];
+  hourly: HourlyPoint[];
+  perfByUrl: {
+    fcp: PerfUrlRow[];
+    lcp: PerfUrlRow[];
+    load: PerfUrlRow[];
+    domReady: PerfUrlRow[];
+  };
 }
 
 export interface DailyPoint {

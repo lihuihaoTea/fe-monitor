@@ -18,8 +18,14 @@ async function main() {
   const visitors = await queryOne<{ count: string | number }>(
     `SELECT COUNT(*)::int as count FROM event_daily_visitors`
   );
+  const hourly = await queryOne<{ count: string | number }>(
+    `SELECT COUNT(*)::int as count FROM event_hourly_perf`
+  );
+  const urls = await queryOne<{ count: string | number }>(
+    `SELECT COUNT(*)::int as count FROM event_daily_perf_urls`
+  );
   console.log(
-    `完成：daily_stats=${Number(stats?.count) || 0} 行，visitors=${Number(visitors?.count) || 0}，耗时 ${Date.now() - t0}ms`
+    `完成：daily_stats=${Number(stats?.count) || 0}，visitors=${Number(visitors?.count) || 0}，hourly_perf=${Number(hourly?.count) || 0}，perf_urls=${Number(urls?.count) || 0}，耗时 ${Date.now() - t0}ms`
   );
   await closeDB();
 }
