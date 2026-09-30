@@ -12,7 +12,8 @@
     "db:init": "tsx src/db/init.ts",
     "db:filters": "tsx src/db/manage-filters.ts",
     "db:clean-filtered": "tsx src/db/clean-filtered.ts",
-    "db:rebuild-daily": "tsx src/db/rebuild-daily.ts"
+    "db:rebuild-daily": "tsx src/db/rebuild-daily.ts",
+    "db:prune-events": "tsx src/db/prune-events.ts"
   },
   "keywords": ["monitoring", "server"],
   "author": "",

@@ -1,22 +1,25 @@
 import { Card, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { PerfUrlRow } from '@/lib/types';
-import { formatDuration, formatNumber } from '@/lib/format';
+import type { PvPageRow } from '@/lib/types';
+import { formatNumber } from '@/lib/format';
 
-interface PerformanceUrlTopListProps {
+interface PvPagesListProps {
   title: string;
-  data: PerfUrlRow[];
+  data: PvPageRow[];
   loading?: boolean;
+  /** 默认按 PV 降序（Top）；最低页传 ascend */
+  sort?: 'descend' | 'ascend';
 }
 
-export function PerformanceUrlTopList({
+export function PvPagesList({
   title,
   data,
   loading,
-}: PerformanceUrlTopListProps) {
+  sort = 'descend',
+}: PvPagesListProps) {
   const total = data.length;
 
-  const columns: ColumnsType<PerfUrlRow> = [
+  const columns: ColumnsType<PvPageRow> = [
     {
       title: '页面',
       dataIndex: 'url',
@@ -28,30 +31,11 @@ export function PerformanceUrlTopList({
       ),
     },
     {
-      title: '平均',
-      dataIndex: 'avg',
-      width: 110,
-      sorter: (a, b) => a.avg - b.avg,
-      defaultSortOrder: 'descend',
-      render: (value: number) => formatDuration(value),
-    },
-    {
-      title: '最小',
-      dataIndex: 'min',
-      width: 100,
-      render: (value: number) => formatDuration(value),
-    },
-    {
-      title: '最大',
-      dataIndex: 'max',
-      width: 100,
-      render: (value: number) => formatDuration(value),
-    },
-    {
-      title: '样本',
-      dataIndex: 'count',
-      width: 90,
-      sorter: (a, b) => a.count - b.count,
+      title: '访问量 (PV)',
+      dataIndex: 'pv',
+      width: 120,
+      sorter: (a, b) => a.pv - b.pv,
+      defaultSortOrder: sort,
       render: (value: number) => formatNumber(value),
     },
   ];

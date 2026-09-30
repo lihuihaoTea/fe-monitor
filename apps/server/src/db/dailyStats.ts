@@ -98,8 +98,8 @@ function parseData(data: RollupEvent['data']): Record<string, unknown> {
   return {};
 }
 
-/** 去掉 query/hash，限制长度，降低 URL 基数 */
-export function normalizePerfUrl(raw: string | null | undefined): string {
+/** 去掉 query/hash，限制长度，降低 URL 基数（性能 / PV 共用） */
+export function normalizePageUrl(raw: string | null | undefined): string {
   const input = (raw || '').trim();
   if (!input) return '(empty)';
   let normalized = input;
@@ -112,6 +112,9 @@ export function normalizePerfUrl(raw: string | null | undefined): string {
   if (normalized.length > 500) normalized = normalized.slice(0, 500);
   return normalized || '(empty)';
 }
+
+/** @deprecated 使用 normalizePageUrl */
+export const normalizePerfUrl = normalizePageUrl;
 
 export function extractPerfSamples(
   event: RollupEvent
@@ -365,6 +368,18 @@ export async function applyRollupWithClient(
     );
   }
 
+  if (delta.pv > 0) {
+    const url = normalizePerfUrl(event.url);
+    await clientQuery(
+      client,
+      `INSERT INTO event_daily_pv_urls AS u (app_id, date, url, pv)
+       VALUES (?, ?::date, ?, ?)
+       ON CONFLICT (app_id, date, url) DO UPDATE SET
+         pv = u.pv + EXCLUDED.pv`,
+      [event.appId, date, url, delta.pv]
+    );
+  }
+
   await upsertHourlyAndUrl(client, event);
 }
 
@@ -377,7 +392,8 @@ export async function rebuildDailyStats(): Promise<void> {
         event_daily_error_types,
         event_daily_visitors,
         event_hourly_perf,
-        event_daily_perf_urls
+        event_daily_perf_urls,
+        event_daily_pv_urls
       IN ACCESS EXCLUSIVE MODE
     `);
     await client.query(`
@@ -386,7 +402,8 @@ export async function rebuildDailyStats(): Promise<void> {
         event_daily_error_types,
         event_daily_visitors,
         event_hourly_perf,
-        event_daily_perf_urls
+        event_daily_perf_urls,
+        event_daily_pv_urls
     `);
 
     await clientQuery(
@@ -592,6 +609,29 @@ export async function rebuildDailyStats(): Promise<void> {
       WHERE type = 'performance' AND sub_type = 'load'
         AND data->>'domReady' IS NOT NULL
       GROUP BY 1, 2, 4
+    `,
+      []
+    );
+
+    // 行为：按 URL 日 PV
+    await clientQuery(
+      client,
+      `
+      INSERT INTO event_daily_pv_urls (app_id, date, url, pv)
+      SELECT
+        app_id,
+        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
+        LEFT(
+          CASE
+            WHEN NULLIF(TRIM(url), '') IS NULL THEN '(empty)'
+            ELSE SPLIT_PART(SPLIT_PART(url, '?', 1), '#', 1)
+          END,
+          500
+        ),
+        COUNT(*)::int
+      FROM events
+      WHERE type = 'behavior' AND sub_type = 'pv'
+      GROUP BY 1, 2, 3
     `,
       []
     );

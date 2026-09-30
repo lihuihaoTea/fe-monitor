@@ -1,7 +1,7 @@
 # fe-monitor 数据库设计文档
 
 > 本文档供开发 Agent 使用，描述当前 PostgreSQL 数据库的表结构、索引、约束及业务逻辑。
-> 最后更新：2026-09-30（性能：日 min/max + 小时聚合 + URL Top N）
+> 最后更新：2026-09-30（行为 PV URL Top10/Bottom3 + behavior/performance TTL）
 
 ## 连接信息
 
@@ -28,6 +28,7 @@ DATABASE_URL=postgresql://monitor:monitor@localhost:5432/fe_monitor
 | `event_daily_visitors` | ~3.1万 | 2 MB | 按日去重访客记录 |
 | `event_hourly_perf` | 按 app×小时×指标 | 小 | 性能小时聚合（一天内趋势） |
 | `event_daily_perf_urls` | 按 app×日×指标×URL | 中 | 性能按 URL 日聚合（Top N 下钻） |
+| `event_daily_pv_urls` | 按 app×日×URL | 中 | 行为按 URL 日 PV（Top10 / Bottom3） |
 
 ---
 
@@ -223,6 +224,22 @@ pnpm db:rebuild-daily    # 全量重建（事务+锁表，防并发冲突）
 
 ---
 
+### 8. event_daily_pv_urls（行为按 URL 日 PV）
+
+| 列名 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| app_id | text | - | 应用 ID |
+| date | date | - | 日期 |
+| url | text | - | 规范化 URL（去 query/hash，最长 500） |
+| pv | int | 0 | 当日该页 PV |
+
+- **主键**: `(app_id, date, url)`
+- **索引**: `idx_daily_pv_urls_lookup (app_id, date)`
+- **Stats API**: 按日窗口函数取访问量最高 Top 10、最低 Bottom 3（仅 `pv > 0`）；`PV_TOP_N` / `PV_BOTTOM_N` 可配
+- **写入**: `behavior/pv` rollup 时 UPSERT `pv = pv + 1`
+
+---
+
 ## 关键注意事项（给开发 Agent）
 
 ### 1. SQL 别名必须使用小写/下划线
@@ -245,13 +262,13 @@ pnpm db:rebuild-daily                  # 重建聚合数据
 ```
 
 ### 3. rebuild-daily 必须在事务中执行
-`TRUNCATE` + `INSERT` 必须在同一事务内完成并加 `ACCESS EXCLUSIVE` 锁，否则 PM2 并发写入会导致主键冲突。已封装在 `withTransaction` 中，**不要拆分为独立 execute() 调用**。锁表范围含 `event_hourly_perf`、`event_daily_perf_urls`。
+`TRUNCATE` + `INSERT` 必须在同一事务内完成并加 `ACCESS EXCLUSIVE` 锁，否则 PM2 并发写入会导致主键冲突。已封装在 `withTransaction` 中，**不要拆分为独立 execute() 调用**。锁表范围含 `event_hourly_perf`、`event_daily_perf_urls`、`event_daily_pv_urls`。
 
 ### 4. clean-filtered 采用分批处理
 每批读取 1000 条（基于 id 游标分页），避免 895MB 大表全量加载导致 OOM。
 
 ### 5. initDB 包含建表和种子数据
-`initDB()` 会自动 CREATE TABLE IF NOT EXISTS、ALTER 补齐性能 min/max 列，并插入默认过滤规则。若存在 events 但日聚合或小时聚合为空，会自动 `rebuildDailyStats()`。
+`initDB()` 会自动 CREATE TABLE IF NOT EXISTS、ALTER 补齐性能 min/max 列，并插入默认过滤规则。若存在 events 但日聚合 / 小时聚合 / PV URL 聚合为空，会自动 `rebuildDailyStats()`。
 
 ### 6. 事件类型枚举
 | type | sub_type 可选值 | 说明 |
@@ -269,3 +286,17 @@ pnpm db:rebuild-daily                  # 重建聚合数据
 - 单日趋势：`event_hourly_perf`
 - 慢页面 Top N：`event_daily_perf_urls`
 - 不再依赖 `events` 明细列表展示性能采样（明细仍可上报入库，供 rebuild）
+
+### 8. 行为看板页面排行
+- 日总 PV/UV/点击/停留：`event_daily_stats` + `event_daily_visitors`
+- 按日 Top10 / Bottom3：`event_daily_pv_urls`（API 字段 `pvPagesByDay`）
+
+### 9. behavior / performance 明细 TTL
+看板读路径已不依赖这两类明细。服务启动后按 `EVENTS_TTL_DAYS`（默认 **7**）定时删除 `type IN ('behavior','performance')` 且 `created_at` 超期的行；设为 `0` 关闭。也可手动：
+
+```bash
+pnpm db:prune-events -- --dry-run
+pnpm db:prune-events
+```
+
+> ⚠️ TTL 后超出窗口的 behavior/performance **无法再 rebuild**；error/api/resource/blank 明细默认保留。

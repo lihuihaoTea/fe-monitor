@@ -5,6 +5,7 @@ import type {
   LatestErrorItem,
   PerfMetricSummary,
   PerfUrlRow,
+  PvPagesDay,
   StatsResponse,
 } from './types';
 
@@ -61,6 +62,28 @@ function normalizeUrlRows(raw: unknown): PerfUrlRow[] {
     max: toNumber((item as PerfUrlRow)?.max),
     count: toNumber((item as PerfUrlRow)?.count),
   }));
+}
+
+function normalizePvPagesByDay(raw: unknown): PvPagesDay[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => {
+    const day = item as Partial<PvPagesDay>;
+    return {
+      date: String(day.date || ''),
+      top: Array.isArray(day.top)
+        ? day.top.map((row) => ({
+            url: String(row?.url || ''),
+            pv: toNumber(row?.pv),
+          }))
+        : [],
+      bottom: Array.isArray(day.bottom)
+        ? day.bottom.map((row) => ({
+            url: String(row?.url || ''),
+            pv: toNumber(row?.pv),
+          }))
+        : [],
+    };
+  });
 }
 
 function normalizeDailyPoint(
@@ -208,6 +231,7 @@ export function normalizeStats(
       load: normalizeUrlRows(raw?.perfByUrl?.load),
       domReady: normalizeUrlRows(raw?.perfByUrl?.domReady),
     },
+    pvPagesByDay: normalizePvPagesByDay(raw?.pvPagesByDay),
   };
 }
 

@@ -17,6 +17,7 @@
     "db:filters": "pnpm --filter @fe-monitor/server db:filters",
     "db:clean-filtered": "pnpm --filter @fe-monitor/server db:clean-filtered",
     "db:rebuild-daily": "pnpm --filter @fe-monitor/server db:rebuild-daily",
+    "db:prune-events": "pnpm --filter @fe-monitor/server db:prune-events",
     "prepublishOnly": "echo '根目录不可发布。请使用: pnpm publish:sdk' && exit 1"
   },
   "keywords": ["frontend", "monitoring", "observability", "error-tracking"],

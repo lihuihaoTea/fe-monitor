@@ -27,6 +27,17 @@ export interface PerfUrlRow {
   count: number;
 }
 
+export interface PvPageRow {
+  url: string;
+  pv: number;
+}
+
+export interface PvPagesDay {
+  date: string;
+  top: PvPageRow[];
+  bottom: PvPageRow[];
+}
+
 export interface HourlyPoint {
   hour: string;
   fcp: number;
@@ -67,6 +78,8 @@ export interface StatsResponse {
     load: PerfUrlRow[];
     domReady: PerfUrlRow[];
   };
+  /** 按日页面 PV：Top10 / Bottom3 */
+  pvPagesByDay: PvPagesDay[];
 }
 
 export interface DailyPoint {

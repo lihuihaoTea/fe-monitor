@@ -1,8 +1,11 @@
-
-import { Spin } from 'antd';
+import { useEffect, useMemo, useState } from 'react';
+import { DatePicker, Space, Spin, Typography } from 'antd';
+import type { Dayjs } from 'dayjs';
 import { MetricSummary } from '@/components/MetricSummary';
 import { CombinedTrendChart } from '@/components/CombinedTrendChart';
+import { PvPagesList } from '@/components/PvPagesList';
 import { useFilters } from '@/hooks/useFilters';
+import { useFilterStore } from '@/stores/filterStore';
 
 /** ms → 分钟，保留 1 位小数 */
 function msToMinutes(ms: number) {
@@ -12,13 +15,36 @@ function msToMinutes(ms: number) {
 
 export function BehaviorDashboard() {
   const { stats, loading } = useFilters();
+  const dateRange = useFilterStore((s) => s.dateRange);
+  const rangeStart = dateRange[0].startOf('day');
+  const rangeEnd = dateRange[1].startOf('day');
+  const [pageDay, setPageDay] = useState<Dayjs>(() => rangeEnd);
+
+  useEffect(() => {
+    setPageDay((prev) => {
+      if (prev.isBefore(rangeStart, 'day')) return rangeStart;
+      if (prev.isAfter(rangeEnd, 'day')) return rangeEnd;
+      return prev;
+    });
+  }, [rangeStart, rangeEnd]);
+
   const behavior = stats?.behavior;
   const daily = stats?.daily || [];
+
+  const dayPages = useMemo(() => {
+    const key = pageDay.format('YYYY-MM-DD');
+    return (
+      stats?.pvPagesByDay?.find((d) => d.date === key) || {
+        date: key,
+        top: [],
+        bottom: [],
+      }
+    );
+  }, [stats?.pvPagesByDay, pageDay]);
 
   return (
     <Spin spinning={loading}>
       <div className="monitor-page">
-        {/* 顺序与趋势图 series 一致，共用 CHART_PALETTE 下标 */}
         <MetricSummary
           loading={loading && !stats}
           items={[
@@ -69,6 +95,43 @@ export function BehaviorDashboard() {
               transform: msToMinutes,
             },
           ]}
+        />
+
+        <Space
+          align="center"
+          style={{ width: '100%', justifyContent: 'space-between', marginBottom: 8 }}
+          wrap
+        >
+          <Typography.Text type="secondary">
+            按日页面访问排行（当天有访问的页面；最高 Top 10 / 最低 3）
+          </Typography.Text>
+          <DatePicker
+            value={pageDay}
+            allowClear={false}
+            disabledDate={(current) => {
+              if (!current) return false;
+              return (
+                current.isBefore(rangeStart, 'day') ||
+                current.isAfter(rangeEnd, 'day')
+              );
+            }}
+            onChange={(value) => {
+              if (value) setPageDay(value.startOf('day'));
+            }}
+          />
+        </Space>
+
+        <PvPagesList
+          title="访问量最高页面 Top 10"
+          data={dayPages.top}
+          loading={loading && !stats}
+          sort="descend"
+        />
+        <PvPagesList
+          title="访问量最低页面 Bottom 3"
+          data={dayPages.bottom}
+          loading={loading && !stats}
+          sort="ascend"
         />
       </div>
     </Spin>
