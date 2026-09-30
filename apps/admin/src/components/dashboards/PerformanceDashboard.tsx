@@ -2,7 +2,7 @@ import { Spin } from 'antd';
 import { MetricSummary } from '@/components/MetricSummary';
 import { CombinedTrendChart } from '@/components/CombinedTrendChart';
 import { PerformanceEventList } from '@/components/PerformanceEventList';
-import { useFilters } from '@/context/FilterContext';
+import { useFilters } from '@/hooks/useFilters';
 
 export function PerformanceDashboard() {
   const { stats, loading } = useFilters();

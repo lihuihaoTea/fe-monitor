@@ -2,7 +2,7 @@ import { Card, Spin, Table } from 'antd';
 import { MetricSummary } from '@/components/MetricSummary';
 import { CombinedTrendChart } from '@/components/CombinedTrendChart';
 import { LatestErrorList } from '@/components/LatestErrorList';
-import { useFilters } from '@/context/FilterContext';
+import { useFilters } from '@/hooks/useFilters';
 import { formatNumber } from '@/lib/format';
 
 export function StabilityDashboard() {

@@ -18,7 +18,7 @@ import {
 } from '@ant-design/icons';
 import type { Dayjs } from 'dayjs';
 import { APP_OPTIONS, APP_THEME_COLORS, type AppId } from '@/lib/constants';
-import { useFilters } from '@/context/FilterContext';
+import { useFilters } from '@/hooks/useFilters';
 
 const { Header, Content } = Layout;
 const { RangePicker } = DatePicker;

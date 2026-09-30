@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Badge,
   Card,
@@ -11,15 +11,16 @@ import {
   theme,
 } from 'antd';
 import type { TablePaginationConfig } from 'antd';
+import { useQuery } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { fetchEventSubTypes, fetchLatestEvents } from '@/lib/api';
 import type {
   EventCategory,
   LatestErrorItem,
-  SubTypeOption,
 } from '@/lib/types';
-import { useFilters } from '@/context/FilterContext';
+import { useFilterStore } from '@/stores/filterStore';
 import { formatNumber } from '@/lib/format';
+import { queryKeys } from '@/lib/queryClient';
 
 export const LIST_LIMIT_OPTIONS = [20, 50, 100, 200] as const;
 export type ListLimit = (typeof LIST_LIMIT_OPTIONS)[number];
@@ -54,11 +55,11 @@ function formatUser(userName?: string, userId?: string) {
 
 export function LatestErrorList({ title, category }: LatestErrorListProps) {
   const { token } = theme.useToken();
-  const { appId, dateRange } = useFilters();
+  const appId = useFilterStore((s) => s.appId);
+  const dateRange = useFilterStore((s) => s.dateRange);
 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<ListLimit>(50);
-  const [total, setTotal] = useState(0);
   const [pageCursors, setPageCursors] = useState<
     Array<{ cursorTs: number; cursorId: number } | null>
   >([null]);
@@ -69,9 +70,6 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
   const [urlKeyword, setUrlKeyword] = useState('');
   const [messageInput, setMessageInput] = useState('');
   const [urlInput, setUrlInput] = useState('');
-  const [typeOptions, setTypeOptions] = useState<SubTypeOption[]>([]);
-  const [data, setData] = useState<LatestErrorItem[]>([]);
-  const [loading, setLoading] = useState(false);
 
   const startDate = dateRange[0].format('YYYY-MM-DD');
   const endDate = dateRange[1].format('YYYY-MM-DD');
@@ -81,75 +79,78 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
     setPageCursors([null]);
   };
 
-  const loadTypes = useCallback(async () => {
-    try {
-      const options = await fetchEventSubTypes({
-        appId,
-        startDate,
-        endDate,
-        category,
-      });
-      setTypeOptions(options);
-    } catch (error) {
-      console.error(error);
-      setTypeOptions([]);
-    }
-  }, [appId, startDate, endDate, category]);
-
-  const loadList = useCallback(async () => {
-    setLoading(true);
-    try {
-      const cursor = page > 1 ? pageCursorsRef.current[page - 1] : null;
-      const result = await fetchLatestEvents({
-        appId,
-        startDate,
-        endDate,
-        category,
-        page,
-        limit: pageSize,
-        subType,
-        messageKeyword: messageKeyword || undefined,
-        urlKeyword: urlKeyword || undefined,
-        ...(cursor
-          ? { cursorTs: cursor.cursorTs, cursorId: cursor.cursorId }
-          : {}),
-      });
-      setData(result.list);
-      setTotal(result.total);
-      if (result.nextCursor) {
-        setPageCursors((prev) => {
-          const next = prev.slice();
-          while (next.length < page) next.push(null);
-          next[page] = result.nextCursor!;
-          return next;
+  const { data: typeOptions = [] } = useQuery({
+    queryKey: queryKeys.eventSubTypes(appId, startDate, endDate, category),
+    queryFn: async () => {
+      try {
+        return await fetchEventSubTypes({
+          appId,
+          startDate,
+          endDate,
+          category,
         });
+      } catch (error) {
+        console.error(error);
+        return [];
       }
-    } catch (error) {
-      console.error(error);
-      setData([]);
-      setTotal(0);
-    } finally {
-      setLoading(false);
-    }
-  }, [
-    appId,
-    startDate,
-    endDate,
-    category,
-    page,
-    pageSize,
-    subType,
-    messageKeyword,
-    urlKeyword,
-  ]);
+    },
+  });
+
+  const cursor = page > 1 ? pageCursorsRef.current[page - 1] : null;
+
+  const { data: listResult, isFetching } = useQuery({
+    queryKey: queryKeys.events({
+      appId,
+      startDate,
+      endDate,
+      category,
+      page,
+      pageSize,
+      subType: subType || null,
+      messageKeyword: messageKeyword || null,
+      urlKeyword: urlKeyword || null,
+      cursorTs: cursor?.cursorTs ?? null,
+      cursorId: cursor?.cursorId ?? null,
+    }),
+    queryFn: async () => {
+      try {
+        return await fetchLatestEvents({
+          appId,
+          startDate,
+          endDate,
+          category,
+          page,
+          limit: pageSize,
+          subType,
+          messageKeyword: messageKeyword || undefined,
+          urlKeyword: urlKeyword || undefined,
+          ...(cursor
+            ? { cursorTs: cursor.cursorTs, cursorId: cursor.cursorId }
+            : {}),
+        });
+      } catch (error) {
+        console.error(error);
+        return {
+          category,
+          page,
+          limit: pageSize,
+          total: 0,
+          list: [] as LatestErrorItem[],
+          nextCursor: null,
+        };
+      }
+    },
+  });
 
   useEffect(() => {
-    loadTypes();
-  }, [loadTypes]);
-
-  useEffect(() => {
-    loadList();
-  }, [loadList]);
+    if (!listResult?.nextCursor) return;
+    setPageCursors((prev) => {
+      const next = prev.slice();
+      while (next.length < page) next.push(null);
+      next[page] = listResult.nextCursor!;
+      return next;
+    });
+  }, [listResult?.nextCursor, page]);
 
   // 关键词输入防抖；变更时回到第 1 页
   useEffect(() => {
@@ -160,6 +161,9 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
     }, 300);
     return () => window.clearTimeout(timer);
   }, [messageInput, urlInput]);
+
+  const data = listResult?.list ?? [];
+  const total = listResult?.total ?? 0;
 
   const pagination: TablePaginationConfig = {
     current: page,
@@ -263,7 +267,7 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
       <Table
         rowKey="id"
         size="small"
-        loading={loading}
+        loading={isFetching}
         pagination={pagination}
         scroll={{ x: '100%', y: 300 }}
         tableLayout="fixed"

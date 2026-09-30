@@ -2,7 +2,7 @@
 import { Spin } from 'antd';
 import { MetricSummary } from '@/components/MetricSummary';
 import { CombinedTrendChart } from '@/components/CombinedTrendChart';
-import { useFilters } from '@/context/FilterContext';
+import { useFilters } from '@/hooks/useFilters';
 
 /** ms → 分钟，保留 1 位小数 */
 function msToMinutes(ms: number) {
