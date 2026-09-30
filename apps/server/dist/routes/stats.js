@@ -3,7 +3,14 @@ import { query, queryOne } from '../db/index.js';
 import { parseRangeBound } from './eventQuery.js';
 export const statsRouter = Router();
 const n = (v) => Number(v) || 0;
+const nOrNull = (v) => {
+    if (v == null || v === '')
+        return null;
+    const num = Number(v);
+    return Number.isFinite(num) ? num : null;
+};
 const CACHE_TTL_MS = Number(process.env.STATS_CACHE_TTL_MS) || 45000;
+const PERF_URL_TOP_N = Number(process.env.PERF_URL_TOP_N) || 20;
 const statsCache = new Map();
 function cacheKey(appId, startDate, endDate) {
     return `${appId}|${String(startDate || '')}|${String(endDate || '')}`;
@@ -13,9 +20,17 @@ function avg(sum, count) {
         return 0;
     return Math.round(sum / count);
 }
+function metricBlock(sum, count, min, max) {
+    return {
+        avg: avg(sum, count),
+        min: count > 0 && min != null ? min : 0,
+        max: count > 0 && max != null ? max : 0,
+        count,
+    };
+}
 /**
  * GET /api/stats
- * 从日聚合表读取，带短缓存（默认 45s）
+ * 从日/小时/URL 聚合表读取，带短缓存（默认 45s）
  */
 statsRouter.get('/', async (req, res) => {
     try {
@@ -31,7 +46,6 @@ statsRouter.get('/', async (req, res) => {
         }
         const start = parseRangeBound(startDate, 'start');
         const end = parseRangeBound(endDate, 'end');
-        // 聚合表按 DATE；用本地日界对齐 parseRangeBound 的日字符串
         const startDay = typeof startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(startDate)
             ? startDate
             : new Date(start).toISOString().slice(0, 10);
@@ -39,90 +53,172 @@ statsRouter.get('/', async (req, res) => {
             ? endDate
             : new Date(end).toISOString().slice(0, 10);
         const dayParams = [appId, startDay, endDay];
-        const [summary, errorTypes, uvRow, dailyRows] = await Promise.all([
+        const hourStart = `${startDay} 00:00:00`;
+        const hourEnd = `${endDay} 23:59:59`;
+        const [summary, errorTypes, uvRow, dailyRows, hourlyRows, urlRows] = await Promise.all([
             queryOne(`SELECT
-           COALESCE(SUM(js_errors), 0)::int as js_errors,
-           COALESCE(SUM(resource_errors), 0)::int as resource_errors,
-           COALESCE(SUM(api_errors), 0)::int as api_errors,
-           COALESCE(SUM(blank_screens), 0)::int as blank_screens,
-           COALESCE(SUM(not_found_404), 0)::int as not_found_404,
-           COALESCE(SUM(other_issues), 0)::int as other_issues,
-           COALESCE(SUM(pv), 0)::int as pv,
-           COALESCE(SUM(clicks), 0)::int as clicks,
-           COALESCE(SUM(stay_duration_sum), 0)::bigint as stay_duration_sum,
-           COALESCE(SUM(stay_count), 0)::int as stay_count,
-           COALESCE(SUM(fcp_sum), 0)::bigint as fcp_sum,
-           COALESCE(SUM(fcp_count), 0)::int as fcp_count,
-           COALESCE(SUM(lcp_sum), 0)::bigint as lcp_sum,
-           COALESCE(SUM(lcp_count), 0)::int as lcp_count,
-           COALESCE(SUM(load_sum), 0)::bigint as load_sum,
-           COALESCE(SUM(load_count), 0)::int as load_count,
-           COALESCE(SUM(dom_ready_sum), 0)::bigint as dom_ready_sum,
-           COALESCE(SUM(dom_ready_count), 0)::int as dom_ready_count
-         FROM event_daily_stats
-         WHERE app_id = ? AND date >= ?::date AND date <= ?::date`, dayParams),
+             COALESCE(SUM(js_errors), 0)::int as js_errors,
+             COALESCE(SUM(resource_errors), 0)::int as resource_errors,
+             COALESCE(SUM(api_errors), 0)::int as api_errors,
+             COALESCE(SUM(blank_screens), 0)::int as blank_screens,
+             COALESCE(SUM(not_found_404), 0)::int as not_found_404,
+             COALESCE(SUM(other_issues), 0)::int as other_issues,
+             COALESCE(SUM(pv), 0)::int as pv,
+             COALESCE(SUM(clicks), 0)::int as clicks,
+             COALESCE(SUM(stay_duration_sum), 0)::bigint as stay_duration_sum,
+             COALESCE(SUM(stay_count), 0)::int as stay_count,
+             COALESCE(SUM(fcp_sum), 0)::bigint as fcp_sum,
+             COALESCE(SUM(fcp_count), 0)::int as fcp_count,
+             MIN(fcp_min) as fcp_min,
+             MAX(fcp_max) as fcp_max,
+             COALESCE(SUM(lcp_sum), 0)::bigint as lcp_sum,
+             COALESCE(SUM(lcp_count), 0)::int as lcp_count,
+             MIN(lcp_min) as lcp_min,
+             MAX(lcp_max) as lcp_max,
+             COALESCE(SUM(load_sum), 0)::bigint as load_sum,
+             COALESCE(SUM(load_count), 0)::int as load_count,
+             MIN(load_min) as load_min,
+             MAX(load_max) as load_max,
+             COALESCE(SUM(dom_ready_sum), 0)::bigint as dom_ready_sum,
+             COALESCE(SUM(dom_ready_count), 0)::int as dom_ready_count,
+             MIN(dom_ready_min) as dom_ready_min,
+             MAX(dom_ready_max) as dom_ready_max
+           FROM event_daily_stats
+           WHERE app_id = ? AND date >= ?::date AND date <= ?::date`, dayParams),
             query(`SELECT sub_type, SUM(count)::int as count
-         FROM event_daily_error_types
-         WHERE app_id = ? AND date >= ?::date AND date <= ?::date
-           AND sub_type IN ('js', 'promise')
-         GROUP BY sub_type
-         ORDER BY count DESC`, dayParams),
-            queryOne(`SELECT COUNT(DISTINCT visitor_id)::int as count
-         FROM event_daily_visitors
-         WHERE app_id = ? AND date >= ?::date AND date <= ?::date`, dayParams),
-            query(`SELECT
-           to_char(s.date, 'YYYY-MM-DD') as date,
-           s.js_errors as errors,
-           s.resource_errors as "resourceErrors",
-           s.api_errors as "apiErrors",
-           s.blank_screens as "blankScreens",
-           s.not_found_404 as "notFound404",
-           s.other_issues as "otherIssues",
-           s.pv,
-           s.clicks,
-           CASE WHEN s.stay_count > 0
-             THEN ROUND(s.stay_duration_sum::numeric / s.stay_count)
-             ELSE 0 END as "avgStay",
-           CASE WHEN s.fcp_count > 0
-             THEN ROUND(s.fcp_sum::numeric / s.fcp_count) ELSE 0 END as fcp,
-           CASE WHEN s.lcp_count > 0
-             THEN ROUND(s.lcp_sum::numeric / s.lcp_count) ELSE 0 END as lcp,
-           CASE WHEN s.load_count > 0
-             THEN ROUND(s.load_sum::numeric / s.load_count) ELSE 0 END as load,
-           CASE WHEN s.dom_ready_count > 0
-             THEN ROUND(s.dom_ready_sum::numeric / s.dom_ready_count)
-             ELSE 0 END as "domReady",
-           COALESCE(v.uv, 0)::int as uv
-         FROM event_daily_stats s
-         LEFT JOIN (
-           SELECT date, COUNT(*)::int as uv
-           FROM event_daily_visitors
+           FROM event_daily_error_types
            WHERE app_id = ? AND date >= ?::date AND date <= ?::date
-           GROUP BY date
-         ) v ON v.date = s.date
-         WHERE s.app_id = ? AND s.date >= ?::date AND s.date <= ?::date
-         ORDER BY s.date ASC
-         LIMIT 90`, [...dayParams, ...dayParams]),
+             AND sub_type IN ('js', 'promise')
+           GROUP BY sub_type
+           ORDER BY count DESC`, dayParams),
+            queryOne(`SELECT COUNT(DISTINCT visitor_id)::int as count
+           FROM event_daily_visitors
+           WHERE app_id = ? AND date >= ?::date AND date <= ?::date`, dayParams),
+            query(`SELECT
+             to_char(s.date, 'YYYY-MM-DD') as date,
+             s.js_errors as errors,
+             s.resource_errors as resource_errors,
+             s.api_errors as api_errors,
+             s.blank_screens as blank_screens,
+             s.not_found_404 as not_found_404,
+             s.other_issues as other_issues,
+             s.pv,
+             s.clicks,
+             CASE WHEN s.stay_count > 0
+               THEN ROUND(s.stay_duration_sum::numeric / s.stay_count)
+               ELSE 0 END as avg_stay,
+             CASE WHEN s.fcp_count > 0
+               THEN ROUND(s.fcp_sum::numeric / s.fcp_count) ELSE 0 END as fcp,
+             CASE WHEN s.lcp_count > 0
+               THEN ROUND(s.lcp_sum::numeric / s.lcp_count) ELSE 0 END as lcp,
+             CASE WHEN s.load_count > 0
+               THEN ROUND(s.load_sum::numeric / s.load_count) ELSE 0 END as load,
+             CASE WHEN s.dom_ready_count > 0
+               THEN ROUND(s.dom_ready_sum::numeric / s.dom_ready_count)
+               ELSE 0 END as dom_ready,
+             COALESCE(v.uv, 0)::int as uv
+           FROM event_daily_stats s
+           LEFT JOIN (
+             SELECT date, COUNT(*)::int as uv
+             FROM event_daily_visitors
+             WHERE app_id = ? AND date >= ?::date AND date <= ?::date
+             GROUP BY date
+           ) v ON v.date = s.date
+           WHERE s.app_id = ? AND s.date >= ?::date AND s.date <= ?::date
+           ORDER BY s.date ASC
+           LIMIT 90`, [...dayParams, ...dayParams]),
+            query(`SELECT
+             to_char(hour_start, 'YYYY-MM-DD HH24:00') as hour_label,
+             metric,
+             CASE WHEN value_count > 0
+               THEN ROUND(value_sum::numeric / value_count) ELSE 0 END as avg_value
+           FROM event_hourly_perf
+           WHERE app_id = ?
+             AND hour_start >= ?::timestamp
+             AND hour_start <= ?::timestamp
+           ORDER BY hour_start ASC`, [appId, hourStart, hourEnd]),
+            query(`SELECT metric, url,
+             SUM(value_sum)::bigint as value_sum,
+             SUM(value_count)::int as value_count,
+             MIN(value_min) as value_min,
+             MAX(value_max) as value_max
+           FROM event_daily_perf_urls
+           WHERE app_id = ? AND date >= ?::date AND date <= ?::date
+           GROUP BY metric, url`, dayParams),
         ]);
         const s = summary || {};
         const rowNum = (key) => n(s[key]);
+        const rowMin = (key) => nOrNull(s[key]);
         const daily = dailyRows.map((row) => ({
             date: row.date,
             pv: n(row.pv),
             uv: n(row.uv),
             errors: n(row.errors),
-            resourceErrors: n(row.resourceErrors ?? row.resourceerrors),
-            apiErrors: n(row.apiErrors ?? row.apierrors),
-            blankScreens: n(row.blankScreens ?? row.blankscreens),
-            notFound404: n(row.notFound404 ?? row.notfound404),
-            otherIssues: n(row.otherIssues ?? row.otherissues),
+            resourceErrors: n(row.resource_errors ?? row.resourceErrors),
+            apiErrors: n(row.api_errors ?? row.apiErrors),
+            blankScreens: n(row.blank_screens ?? row.blankScreens),
+            notFound404: n(row.not_found_404 ?? row.notFound404),
+            otherIssues: n(row.other_issues ?? row.otherIssues),
             fcp: n(row.fcp),
             lcp: n(row.lcp),
             load: n(row.load),
-            domReady: n(row.domReady ?? row.domready),
-            avgStay: n(row.avgStay ?? row.avgstay),
+            domReady: n(row.dom_ready ?? row.domReady),
+            avgStay: n(row.avg_stay ?? row.avgStay),
             clicks: n(row.clicks),
         }));
+        // 小时点：按 hour 透视 4 指标
+        const hourlyMap = new Map();
+        for (const row of hourlyRows) {
+            const hour = String(row.hour_label);
+            let point = hourlyMap.get(hour);
+            if (!point) {
+                point = { hour, fcp: 0, lcp: 0, load: 0, domReady: 0 };
+                hourlyMap.set(hour, point);
+            }
+            const value = n(row.avg_value);
+            if (row.metric === 'fcp')
+                point.fcp = value;
+            else if (row.metric === 'lcp')
+                point.lcp = value;
+            else if (row.metric === 'load')
+                point.load = value;
+            else if (row.metric === 'dom_ready')
+                point.domReady = value;
+        }
+        const hourly = Array.from(hourlyMap.values()).sort((a, b) => a.hour.localeCompare(b.hour));
+        // Top N URL：各指标按 avg 降序
+        const emptyUrlList = () => [];
+        const perfByUrl = {
+            fcp: emptyUrlList(),
+            lcp: emptyUrlList(),
+            load: emptyUrlList(),
+            domReady: emptyUrlList(),
+        };
+        const buckets = {
+            fcp: perfByUrl.fcp,
+            lcp: perfByUrl.lcp,
+            load: perfByUrl.load,
+            dom_ready: perfByUrl.domReady,
+        };
+        for (const row of urlRows) {
+            const bucket = buckets[row.metric];
+            if (!bucket)
+                continue;
+            const count = n(row.value_count);
+            if (!count)
+                continue;
+            bucket.push({
+                url: row.url,
+                avg: avg(n(row.value_sum), count),
+                min: nOrNull(row.value_min) ?? 0,
+                max: nOrNull(row.value_max) ?? 0,
+                count,
+            });
+        }
+        for (const list of Object.values(perfByUrl)) {
+            list.sort((a, b) => b.avg - a.avg || b.count - a.count);
+            list.splice(PERF_URL_TOP_N);
+        }
         const payload = {
             errors: {
                 total: rowNum('js_errors'),
@@ -139,10 +235,10 @@ statsRouter.get('/', async (req, res) => {
                 otherIssues: rowNum('other_issues'),
             },
             performance: {
-                fcp: avg(rowNum('fcp_sum'), rowNum('fcp_count')),
-                lcp: avg(rowNum('lcp_sum'), rowNum('lcp_count')),
-                load: avg(rowNum('load_sum'), rowNum('load_count')),
-                domReady: avg(rowNum('dom_ready_sum'), rowNum('dom_ready_count')),
+                fcp: metricBlock(rowNum('fcp_sum'), rowNum('fcp_count'), rowMin('fcp_min'), rowMin('fcp_max')),
+                lcp: metricBlock(rowNum('lcp_sum'), rowNum('lcp_count'), rowMin('lcp_min'), rowMin('lcp_max')),
+                load: metricBlock(rowNum('load_sum'), rowNum('load_count'), rowMin('load_min'), rowMin('load_max')),
+                domReady: metricBlock(rowNum('dom_ready_sum'), rowNum('dom_ready_count'), rowMin('dom_ready_min'), rowMin('dom_ready_max')),
             },
             behavior: {
                 pv: rowNum('pv'),
@@ -151,9 +247,10 @@ statsRouter.get('/', async (req, res) => {
                 totalClicks: rowNum('clicks'),
             },
             daily,
+            hourly,
+            perfByUrl,
         };
         statsCache.set(key, { expires: Date.now() + CACHE_TTL_MS, payload });
-        // 简单淘汰：过大时清掉过期项
         if (statsCache.size > 200) {
             const now = Date.now();
             for (const [k, v] of statsCache) {

@@ -1,11 +1,20 @@
-import { clientQuery, execute } from './index.js';
-/** 与 Node 进程本地时区一致的 YYYY-MM-DD（对齐 PG to_char(to_timestamp(...))） */
+import { clientQuery, withTransaction } from './index.js';
+/** 与 Node 进程本地时区一致的 YYYY-MM-DD */
 export function dayKeyFromMs(ms) {
     const d = new Date(ms);
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
     return `${y}-${m}-${day}`;
+}
+/** 本地整点：YYYY-MM-DD HH:00:00 */
+export function hourKeyFromMs(ms) {
+    const d = new Date(ms);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const h = String(d.getHours()).padStart(2, '0');
+    return `${y}-${m}-${day} ${h}:00:00`;
 }
 function emptyDelta() {
     return {
@@ -21,12 +30,20 @@ function emptyDelta() {
         stayCount: 0,
         fcpSum: 0,
         fcpCount: 0,
+        fcpMin: null,
+        fcpMax: null,
         lcpSum: 0,
         lcpCount: 0,
+        lcpMin: null,
+        lcpMax: null,
         loadSum: 0,
         loadCount: 0,
+        loadMin: null,
+        loadMax: null,
         domReadySum: 0,
         domReadyCount: 0,
+        domReadyMin: null,
+        domReadyMax: null,
     };
 }
 function parseData(data) {
@@ -35,6 +52,45 @@ function parseData(data) {
     if (typeof data === 'object')
         return data;
     return {};
+}
+/** 去掉 query/hash，限制长度，降低 URL 基数 */
+export function normalizePerfUrl(raw) {
+    const input = (raw || '').trim();
+    if (!input)
+        return '(empty)';
+    let normalized = input;
+    try {
+        const u = new URL(input);
+        normalized = `${u.origin}${u.pathname}`;
+    }
+    catch {
+        normalized = input.split(/[?#]/)[0] || input;
+    }
+    if (normalized.length > 500)
+        normalized = normalized.slice(0, 500);
+    return normalized || '(empty)';
+}
+export function extractPerfSamples(event) {
+    if (event.type !== 'performance')
+        return [];
+    const data = parseData(event.data);
+    const sub = event.subType || '';
+    const samples = [];
+    const value = Number(data.value);
+    if (sub === 'fcp' && Number.isFinite(value)) {
+        samples.push({ metric: 'fcp', value: Math.round(value) });
+    }
+    else if (sub === 'lcp' && Number.isFinite(value)) {
+        samples.push({ metric: 'lcp', value: Math.round(value) });
+    }
+    else if (sub === 'load' && Number.isFinite(value)) {
+        samples.push({ metric: 'load', value: Math.round(value) });
+        const domReady = Number(data.domReady);
+        if (Number.isFinite(domReady)) {
+            samples.push({ metric: 'dom_ready', value: Math.round(domReady) });
+        }
+    }
+    return samples;
 }
 /** 单条事件 → 日聚合增量 */
 export function buildDailyDelta(event) {
@@ -83,26 +139,60 @@ export function buildDailyDelta(event) {
         }
     }
     else if (event.type === 'performance') {
-        const value = Number(data.value);
-        if (sub === 'fcp' && Number.isFinite(value)) {
-            delta.fcpSum = Math.round(value);
-            delta.fcpCount = 1;
-        }
-        else if (sub === 'lcp' && Number.isFinite(value)) {
-            delta.lcpSum = Math.round(value);
-            delta.lcpCount = 1;
-        }
-        else if (sub === 'load' && Number.isFinite(value)) {
-            delta.loadSum = Math.round(value);
-            delta.loadCount = 1;
-            const domReady = Number(data.domReady);
-            if (Number.isFinite(domReady)) {
-                delta.domReadySum = Math.round(domReady);
+        for (const sample of extractPerfSamples(event)) {
+            if (sample.metric === 'fcp') {
+                delta.fcpSum = sample.value;
+                delta.fcpCount = 1;
+                delta.fcpMin = sample.value;
+                delta.fcpMax = sample.value;
+            }
+            else if (sample.metric === 'lcp') {
+                delta.lcpSum = sample.value;
+                delta.lcpCount = 1;
+                delta.lcpMin = sample.value;
+                delta.lcpMax = sample.value;
+            }
+            else if (sample.metric === 'load') {
+                delta.loadSum = sample.value;
+                delta.loadCount = 1;
+                delta.loadMin = sample.value;
+                delta.loadMax = sample.value;
+            }
+            else if (sample.metric === 'dom_ready') {
+                delta.domReadySum = sample.value;
                 delta.domReadyCount = 1;
+                delta.domReadyMin = sample.value;
+                delta.domReadyMax = sample.value;
             }
         }
     }
     return { delta, errorSubType, trackVisitor };
+}
+async function upsertHourlyAndUrl(client, event) {
+    const samples = extractPerfSamples(event);
+    if (samples.length === 0)
+        return;
+    const date = dayKeyFromMs(event.timestamp);
+    const hour = hourKeyFromMs(event.timestamp);
+    const url = normalizePerfUrl(event.url);
+    for (const { metric, value } of samples) {
+        await clientQuery(client, `INSERT INTO event_hourly_perf AS h (
+         app_id, hour_start, metric, value_sum, value_count, value_min, value_max
+       ) VALUES (?, ?::timestamp, ?, ?, 1, ?, ?)
+       ON CONFLICT (app_id, hour_start, metric) DO UPDATE SET
+         value_sum = h.value_sum + EXCLUDED.value_sum,
+         value_count = h.value_count + EXCLUDED.value_count,
+         value_min = LEAST(h.value_min, EXCLUDED.value_min),
+         value_max = GREATEST(h.value_max, EXCLUDED.value_max)`, [event.appId, hour, metric, value, value, value]);
+        await clientQuery(client, `INSERT INTO event_daily_perf_urls AS u (
+         app_id, date, metric, url, value_sum, value_count, value_min, value_max
+       ) VALUES (?, ?::date, ?, ?, ?, 1, ?, ?)
+       ON CONFLICT (app_id, date, metric, url) DO UPDATE SET
+         value_sum = u.value_sum + EXCLUDED.value_sum,
+         value_count = u.value_count + EXCLUDED.value_count,
+         value_min = LEAST(u.value_min, EXCLUDED.value_min),
+         value_max = GREATEST(u.value_max, EXCLUDED.value_max)`, [event.appId, date, metric, url, value, value, value]);
+    }
 }
 export async function applyRollupWithClient(client, event) {
     const date = dayKeyFromMs(event.timestamp);
@@ -112,13 +202,17 @@ export async function applyRollupWithClient(client, event) {
        js_errors, resource_errors, api_errors, blank_screens,
        not_found_404, other_issues, pv, clicks,
        stay_duration_sum, stay_count,
-       fcp_sum, fcp_count, lcp_sum, lcp_count,
-       load_sum, load_count, dom_ready_sum, dom_ready_count
+       fcp_sum, fcp_count, fcp_min, fcp_max,
+       lcp_sum, lcp_count, lcp_min, lcp_max,
+       load_sum, load_count, load_min, load_max,
+       dom_ready_sum, dom_ready_count, dom_ready_min, dom_ready_max
      ) VALUES (
        ?, ?::date,
        ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?,
+       ?, ?, ?, ?,
+       ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?
      )
@@ -135,12 +229,28 @@ export async function applyRollupWithClient(client, event) {
        stay_count = s.stay_count + EXCLUDED.stay_count,
        fcp_sum = s.fcp_sum + EXCLUDED.fcp_sum,
        fcp_count = s.fcp_count + EXCLUDED.fcp_count,
+       fcp_min = CASE WHEN EXCLUDED.fcp_count > 0
+         THEN LEAST(s.fcp_min, EXCLUDED.fcp_min) ELSE s.fcp_min END,
+       fcp_max = CASE WHEN EXCLUDED.fcp_count > 0
+         THEN GREATEST(s.fcp_max, EXCLUDED.fcp_max) ELSE s.fcp_max END,
        lcp_sum = s.lcp_sum + EXCLUDED.lcp_sum,
        lcp_count = s.lcp_count + EXCLUDED.lcp_count,
+       lcp_min = CASE WHEN EXCLUDED.lcp_count > 0
+         THEN LEAST(s.lcp_min, EXCLUDED.lcp_min) ELSE s.lcp_min END,
+       lcp_max = CASE WHEN EXCLUDED.lcp_count > 0
+         THEN GREATEST(s.lcp_max, EXCLUDED.lcp_max) ELSE s.lcp_max END,
        load_sum = s.load_sum + EXCLUDED.load_sum,
        load_count = s.load_count + EXCLUDED.load_count,
+       load_min = CASE WHEN EXCLUDED.load_count > 0
+         THEN LEAST(s.load_min, EXCLUDED.load_min) ELSE s.load_min END,
+       load_max = CASE WHEN EXCLUDED.load_count > 0
+         THEN GREATEST(s.load_max, EXCLUDED.load_max) ELSE s.load_max END,
        dom_ready_sum = s.dom_ready_sum + EXCLUDED.dom_ready_sum,
-       dom_ready_count = s.dom_ready_count + EXCLUDED.dom_ready_count`, [
+       dom_ready_count = s.dom_ready_count + EXCLUDED.dom_ready_count,
+       dom_ready_min = CASE WHEN EXCLUDED.dom_ready_count > 0
+         THEN LEAST(s.dom_ready_min, EXCLUDED.dom_ready_min) ELSE s.dom_ready_min END,
+       dom_ready_max = CASE WHEN EXCLUDED.dom_ready_count > 0
+         THEN GREATEST(s.dom_ready_max, EXCLUDED.dom_ready_max) ELSE s.dom_ready_max END`, [
         event.appId,
         date,
         delta.jsErrors,
@@ -155,12 +265,20 @@ export async function applyRollupWithClient(client, event) {
         delta.stayCount,
         delta.fcpSum,
         delta.fcpCount,
+        delta.fcpMin,
+        delta.fcpMax,
         delta.lcpSum,
         delta.lcpCount,
+        delta.lcpMin,
+        delta.lcpMax,
         delta.loadSum,
         delta.loadCount,
+        delta.loadMin,
+        delta.loadMax,
         delta.domReadySum,
         delta.domReadyCount,
+        delta.domReadyMin,
+        delta.domReadyMax,
     ]);
     if (errorSubType) {
         await clientQuery(client, `INSERT INTO event_daily_error_types (app_id, date, sub_type, count)
@@ -173,80 +291,200 @@ export async function applyRollupWithClient(client, event) {
        VALUES (?, ?::date, ?)
        ON CONFLICT DO NOTHING`, [event.appId, date, event.visitorId]);
     }
+    await upsertHourlyAndUrl(client, event);
 }
-/** 从 events 全量重建日聚合（SQL 聚合，快） */
+/** 从 events 全量重建日/小时/URL 聚合 */
 export async function rebuildDailyStats() {
-    await execute(`TRUNCATE event_daily_stats, event_daily_error_types, event_daily_visitors`);
-    await execute(`
-    INSERT INTO event_daily_stats (
-      app_id, date,
-      js_errors, resource_errors, api_errors, blank_screens,
-      not_found_404, other_issues, pv, clicks,
-      stay_duration_sum, stay_count,
-      fcp_sum, fcp_count, lcp_sum, lcp_count,
-      load_sum, load_count, dom_ready_sum, dom_ready_count
-    )
-    SELECT
-      app_id,
-      to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date as date,
-      COUNT(*) FILTER (WHERE type = 'error' AND sub_type IN ('js', 'promise'))::int,
-      COUNT(*) FILTER (WHERE type = 'resource')::int,
-      COUNT(*) FILTER (WHERE type = 'api')::int,
-      COUNT(*) FILTER (WHERE type = 'blank')::int,
-      COUNT(*) FILTER (
-        WHERE type = 'error' AND (
-          sub_type = '404' OR (data->>'message') = '404'
+    await withTransaction(async (client) => {
+        await client.query(`
+      LOCK TABLE
+        event_daily_stats,
+        event_daily_error_types,
+        event_daily_visitors,
+        event_hourly_perf,
+        event_daily_perf_urls
+      IN ACCESS EXCLUSIVE MODE
+    `);
+        await client.query(`
+      TRUNCATE
+        event_daily_stats,
+        event_daily_error_types,
+        event_daily_visitors,
+        event_hourly_perf,
+        event_daily_perf_urls
+    `);
+        await clientQuery(client, `
+      INSERT INTO event_daily_stats (
+        app_id, date,
+        js_errors, resource_errors, api_errors, blank_screens,
+        not_found_404, other_issues, pv, clicks,
+        stay_duration_sum, stay_count,
+        fcp_sum, fcp_count, fcp_min, fcp_max,
+        lcp_sum, lcp_count, lcp_min, lcp_max,
+        load_sum, load_count, load_min, load_max,
+        dom_ready_sum, dom_ready_count, dom_ready_min, dom_ready_max
+      )
+      SELECT
+        app_id,
+        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date as date,
+        COUNT(*) FILTER (WHERE type = 'error' AND sub_type IN ('js', 'promise'))::int,
+        COUNT(*) FILTER (WHERE type = 'resource')::int,
+        COUNT(*) FILTER (WHERE type = 'api')::int,
+        COUNT(*) FILTER (WHERE type = 'blank')::int,
+        COUNT(*) FILTER (
+          WHERE type = 'error' AND (
+            sub_type = '404' OR (data->>'message') = '404'
+          )
+        )::int,
+        COUNT(*) FILTER (
+          WHERE type = 'error' AND (
+            sub_type IS NULL OR sub_type NOT IN ('js', 'promise')
+          )
+        )::int,
+        COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'pv')::int,
+        COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
+          THEN (data->>'clickCount')::int ELSE 0 END), 0)::int,
+        COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
+          THEN (data->>'duration')::bigint ELSE 0 END), 0)::bigint,
+        COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'stay'
+          AND (data->>'duration') IS NOT NULL)::int,
+        COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'fcp'
+          THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
+        COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'fcp')::int,
+        MIN((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'fcp'),
+        MAX((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'fcp'),
+        COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'lcp'
+          THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
+        COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'lcp')::int,
+        MIN((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'lcp'),
+        MAX((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'lcp'),
+        COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'load'
+          THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
+        COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'load')::int,
+        MIN((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'load'),
+        MAX((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'load'),
+        COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'load'
+          THEN (data->>'domReady')::bigint ELSE 0 END), 0)::bigint,
+        COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'load'
+          AND data->>'domReady' IS NOT NULL)::int,
+        MIN((data->>'domReady')::bigint) FILTER (
+          WHERE type = 'performance' AND sub_type = 'load' AND data->>'domReady' IS NOT NULL
+        ),
+        MAX((data->>'domReady')::bigint) FILTER (
+          WHERE type = 'performance' AND sub_type = 'load' AND data->>'domReady' IS NOT NULL
         )
-      )::int,
-      COUNT(*) FILTER (
-        WHERE type = 'error' AND (
-          sub_type IS NULL OR sub_type NOT IN ('js', 'promise')
-        )
-      )::int,
-      COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'pv')::int,
-      COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
-        THEN (data->>'clickCount')::int ELSE 0 END), 0)::int,
-      COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
-        THEN (data->>'duration')::bigint ELSE 0 END), 0)::bigint,
-      COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'stay'
-        AND (data->>'duration') IS NOT NULL)::int,
-      COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'fcp'
-        THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
-      COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'fcp')::int,
-      COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'lcp'
-        THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
-      COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'lcp')::int,
-      COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'load'
-        THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
-      COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'load')::int,
-      COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'load'
-        THEN (data->>'domReady')::bigint ELSE 0 END), 0)::bigint,
-      COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'load'
-        AND data->>'domReady' IS NOT NULL)::int
-    FROM events
-    GROUP BY app_id, to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')
-  `);
-    await execute(`
-    INSERT INTO event_daily_error_types (app_id, date, sub_type, count)
-    SELECT
-      app_id,
-      to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
-      COALESCE(NULLIF(TRIM(sub_type), ''), 'manual'),
-      COUNT(*)::int
-    FROM events
-    WHERE type = 'error'
-    GROUP BY 1, 2, 3
-  `);
-    await execute(`
-    INSERT INTO event_daily_visitors (app_id, date, visitor_id)
-    SELECT DISTINCT
-      app_id,
-      to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
-      visitor_id
-    FROM events
-    WHERE type = 'behavior' AND sub_type = 'pv'
-      AND visitor_id IS NOT NULL AND TRIM(visitor_id) != ''
-    ON CONFLICT DO NOTHING
-  `);
+      FROM events
+      GROUP BY app_id, to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')
+    `, []);
+        await clientQuery(client, `
+      INSERT INTO event_daily_error_types (app_id, date, sub_type, count)
+      SELECT
+        app_id,
+        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
+        COALESCE(NULLIF(TRIM(sub_type), ''), 'manual'),
+        COUNT(*)::int
+      FROM events
+      WHERE type = 'error'
+      GROUP BY 1, 2, 3
+    `, []);
+        await clientQuery(client, `
+      INSERT INTO event_daily_visitors (app_id, date, visitor_id)
+      SELECT DISTINCT
+        app_id,
+        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
+        visitor_id
+      FROM events
+      WHERE type = 'behavior' AND sub_type = 'pv'
+        AND visitor_id IS NOT NULL AND TRIM(visitor_id) != ''
+      ON CONFLICT DO NOTHING
+    `, []);
+        // 小时聚合：fcp / lcp / load
+        await clientQuery(client, `
+      INSERT INTO event_hourly_perf (
+        app_id, hour_start, metric, value_sum, value_count, value_min, value_max
+      )
+      SELECT
+        app_id,
+        date_trunc('hour', to_timestamp(timestamp / 1000.0))::timestamp,
+        sub_type,
+        COALESCE(SUM((data->>'value')::bigint), 0)::bigint,
+        COUNT(*)::int,
+        MIN((data->>'value')::bigint),
+        MAX((data->>'value')::bigint)
+      FROM events
+      WHERE type = 'performance' AND sub_type IN ('fcp', 'lcp', 'load')
+        AND data->>'value' IS NOT NULL
+      GROUP BY 1, 2, 3
+    `, []);
+        // 小时聚合：dom_ready（嵌在 load）
+        await clientQuery(client, `
+      INSERT INTO event_hourly_perf (
+        app_id, hour_start, metric, value_sum, value_count, value_min, value_max
+      )
+      SELECT
+        app_id,
+        date_trunc('hour', to_timestamp(timestamp / 1000.0))::timestamp,
+        'dom_ready',
+        COALESCE(SUM((data->>'domReady')::bigint), 0)::bigint,
+        COUNT(*)::int,
+        MIN((data->>'domReady')::bigint),
+        MAX((data->>'domReady')::bigint)
+      FROM events
+      WHERE type = 'performance' AND sub_type = 'load'
+        AND data->>'domReady' IS NOT NULL
+      GROUP BY 1, 2
+    `, []);
+        // URL 日聚合：fcp / lcp / load（规范化 URL）
+        await clientQuery(client, `
+      INSERT INTO event_daily_perf_urls (
+        app_id, date, metric, url, value_sum, value_count, value_min, value_max
+      )
+      SELECT
+        app_id,
+        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
+        sub_type,
+        LEFT(
+          CASE
+            WHEN NULLIF(TRIM(url), '') IS NULL THEN '(empty)'
+            WHEN POSITION('://' IN url) > 0 THEN
+              SPLIT_PART(SPLIT_PART(url, '?', 1), '#', 1)
+            ELSE SPLIT_PART(SPLIT_PART(url, '?', 1), '#', 1)
+          END,
+          500
+        ),
+        COALESCE(SUM((data->>'value')::bigint), 0)::bigint,
+        COUNT(*)::int,
+        MIN((data->>'value')::bigint),
+        MAX((data->>'value')::bigint)
+      FROM events
+      WHERE type = 'performance' AND sub_type IN ('fcp', 'lcp', 'load')
+        AND data->>'value' IS NOT NULL
+      GROUP BY 1, 2, 3, 4
+    `, []);
+        await clientQuery(client, `
+      INSERT INTO event_daily_perf_urls (
+        app_id, date, metric, url, value_sum, value_count, value_min, value_max
+      )
+      SELECT
+        app_id,
+        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
+        'dom_ready',
+        LEFT(
+          CASE
+            WHEN NULLIF(TRIM(url), '') IS NULL THEN '(empty)'
+            ELSE SPLIT_PART(SPLIT_PART(url, '?', 1), '#', 1)
+          END,
+          500
+        ),
+        COALESCE(SUM((data->>'domReady')::bigint), 0)::bigint,
+        COUNT(*)::int,
+        MIN((data->>'domReady')::bigint),
+        MAX((data->>'domReady')::bigint)
+      FROM events
+      WHERE type = 'performance' AND sub_type = 'load'
+        AND data->>'domReady' IS NOT NULL
+      GROUP BY 1, 2, 4
+    `, []);
+    });
 }
 //# sourceMappingURL=dailyStats.js.map

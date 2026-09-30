@@ -115,14 +115,33 @@ export async function initDB() {
       stay_count INT NOT NULL DEFAULT 0,
       fcp_sum BIGINT NOT NULL DEFAULT 0,
       fcp_count INT NOT NULL DEFAULT 0,
+      fcp_min BIGINT,
+      fcp_max BIGINT,
       lcp_sum BIGINT NOT NULL DEFAULT 0,
       lcp_count INT NOT NULL DEFAULT 0,
+      lcp_min BIGINT,
+      lcp_max BIGINT,
       load_sum BIGINT NOT NULL DEFAULT 0,
       load_count INT NOT NULL DEFAULT 0,
+      load_min BIGINT,
+      load_max BIGINT,
       dom_ready_sum BIGINT NOT NULL DEFAULT 0,
       dom_ready_count INT NOT NULL DEFAULT 0,
+      dom_ready_min BIGINT,
+      dom_ready_max BIGINT,
       PRIMARY KEY (app_id, date)
     );
+
+    -- 兼容旧库：补齐 min/max 列
+    ALTER TABLE event_daily_stats
+      ADD COLUMN IF NOT EXISTS fcp_min BIGINT,
+      ADD COLUMN IF NOT EXISTS fcp_max BIGINT,
+      ADD COLUMN IF NOT EXISTS lcp_min BIGINT,
+      ADD COLUMN IF NOT EXISTS lcp_max BIGINT,
+      ADD COLUMN IF NOT EXISTS load_min BIGINT,
+      ADD COLUMN IF NOT EXISTS load_max BIGINT,
+      ADD COLUMN IF NOT EXISTS dom_ready_min BIGINT,
+      ADD COLUMN IF NOT EXISTS dom_ready_max BIGINT;
 
     CREATE TABLE IF NOT EXISTS event_daily_error_types (
       app_id TEXT NOT NULL,
@@ -139,20 +158,52 @@ export async function initDB() {
       PRIMARY KEY (app_id, date, visitor_id)
     );
 
+    -- 性能小时聚合（一天内按小时趋势）
+    CREATE TABLE IF NOT EXISTS event_hourly_perf (
+      app_id TEXT NOT NULL,
+      hour_start TIMESTAMP NOT NULL,
+      metric TEXT NOT NULL,
+      value_sum BIGINT NOT NULL DEFAULT 0,
+      value_count INT NOT NULL DEFAULT 0,
+      value_min BIGINT,
+      value_max BIGINT,
+      PRIMARY KEY (app_id, hour_start, metric)
+    );
+
+    -- 性能按 URL 日聚合（Top N 下钻）
+    CREATE TABLE IF NOT EXISTS event_daily_perf_urls (
+      app_id TEXT NOT NULL,
+      date DATE NOT NULL,
+      metric TEXT NOT NULL,
+      url TEXT NOT NULL,
+      value_sum BIGINT NOT NULL DEFAULT 0,
+      value_count INT NOT NULL DEFAULT 0,
+      value_min BIGINT,
+      value_max BIGINT,
+      PRIMARY KEY (app_id, date, metric, url)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_daily_stats_date
       ON event_daily_stats(date);
     CREATE INDEX IF NOT EXISTS idx_daily_visitors_app_date
       ON event_daily_visitors(app_id, date);
+    CREATE INDEX IF NOT EXISTS idx_hourly_perf_app_hour
+      ON event_hourly_perf(app_id, hour_start);
+    CREATE INDEX IF NOT EXISTS idx_daily_perf_urls_lookup
+      ON event_daily_perf_urls(app_id, date, metric);
   `);
     await seedDefaultFilters();
-    // 已有明细但无日聚合时自动回填一次
+    // 已有明细但无日聚合 / 无小时聚合时自动回填
     const dailyCount = await queryOne(`SELECT COUNT(*)::int as count FROM event_daily_stats`);
+    const hourlyCount = await queryOne(`SELECT COUNT(*)::int as count FROM event_hourly_perf`);
     const eventCount = await queryOne(`SELECT COUNT(*)::int as count FROM events`);
-    if (Number(dailyCount?.count) === 0 && Number(eventCount?.count) > 0) {
-        console.log('检测到历史 events，开始重建日聚合…');
+    const needRebuild = Number(eventCount?.count) > 0 &&
+        (Number(dailyCount?.count) === 0 || Number(hourlyCount?.count) === 0);
+    if (needRebuild) {
+        console.log('检测到历史 events 或缺性能聚合，开始重建聚合…');
         const { rebuildDailyStats } = await import('./dailyStats.js');
         await rebuildDailyStats();
-        console.log('日聚合重建完成');
+        console.log('聚合重建完成');
     }
     console.log('Database initialized successfully');
 }

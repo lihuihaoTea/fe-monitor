@@ -93,6 +93,7 @@ reportRouter.post('/', async (req, res) => {
                             timestamp: row.timestamp,
                             appId: row.appId,
                             visitorId: row.visitorId,
+                            url: row.url,
                             data: row.data,
                         });
                         inserted++;
