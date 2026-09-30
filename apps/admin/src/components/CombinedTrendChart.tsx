@@ -22,6 +22,8 @@ interface CombinedTrendChartProps<T> {
   series: CombinedSeries<T>[];
   loading?: boolean;
   height?: number;
+  /** Card 右上角额外区域（如日期选择） */
+  extra?: React.ReactNode;
 }
 
 export function CombinedTrendChart<T>({
@@ -31,6 +33,7 @@ export function CombinedTrendChart<T>({
   series,
   loading,
   height = 360,
+  extra,
 }: CombinedTrendChartProps<T>) {
   const { token } = theme.useToken();
   const seriesKey = series
@@ -164,7 +167,7 @@ export function CombinedTrendChart<T>({
   ]);
 
   return (
-    <Card className="monitor-card" title={title} loading={loading}>
+    <Card className="monitor-card" title={title} extra={extra} loading={loading}>
       <ReactECharts option={option} style={{ height }} notMerge lazyUpdate />
     </Card>
   );

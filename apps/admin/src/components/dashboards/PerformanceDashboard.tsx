@@ -1,9 +1,12 @@
-import { Spin } from 'antd';
+import { useEffect, useMemo, useState } from 'react';
+import { DatePicker, Spin } from 'antd';
+import { type Dayjs } from 'dayjs';
 import { MetricSummary } from '@/components/MetricSummary';
 import { CombinedTrendChart } from '@/components/CombinedTrendChart';
 import { PerformanceUrlTopList } from '@/components/PerformanceUrlTopList';
 import { useFilters } from '@/hooks/useFilters';
 import { useFilterStore } from '@/stores/filterStore';
+import { fillHourlyRange } from '@/lib/normalizeStats';
 import type { PerfMetricSummary } from '@/lib/types';
 import { formatDuration } from '@/lib/format';
 
@@ -25,8 +28,19 @@ const TREND_SERIES = [
 export function PerformanceDashboard() {
   const { stats, loading } = useFilters();
   const dateRange = useFilterStore((s) => s.dateRange);
-  const singleDay =
-    dateRange[0].format('YYYY-MM-DD') === dateRange[1].format('YYYY-MM-DD');
+  const rangeStart = dateRange[0].startOf('day');
+  const rangeEnd = dateRange[1].startOf('day');
+
+  const [hourlyDay, setHourlyDay] = useState<Dayjs>(() => rangeEnd);
+
+  // 全局日期范围变化时，把小时图选中日钳制到范围内（默认取结束日）
+  useEffect(() => {
+    setHourlyDay((prev) => {
+      if (prev.isBefore(rangeStart, 'day')) return rangeStart;
+      if (prev.isAfter(rangeEnd, 'day')) return rangeEnd;
+      return prev;
+    });
+  }, [rangeStart, rangeEnd]);
 
   const performance = stats?.performance ?? {
     fcp: { avg: 0, min: 0, max: 0, count: 0 },
@@ -35,13 +49,21 @@ export function PerformanceDashboard() {
     domReady: { avg: 0, min: 0, max: 0, count: 0 },
   };
   const daily = stats?.daily ?? [];
-  const hourly = stats?.hourly ?? [];
   const perfByUrl = stats?.perfByUrl ?? {
     fcp: [],
     lcp: [],
     load: [],
     domReady: [],
   };
+
+  const hourlyOfDay = useMemo(() => {
+    const filled = fillHourlyRange(stats?.hourly, hourlyDay);
+    // X 轴只展示 HH:00，避免整天标签过长
+    return filled.map((point) => ({
+      ...point,
+      hour: point.hour.slice(11, 16) || point.hour,
+    }));
+  }, [stats?.hourly, hourlyDay]);
 
   return (
     <Spin spinning={loading}>
@@ -88,23 +110,37 @@ export function PerformanceDashboard() {
           ]}
         />
 
-        {singleDay ? (
-          <CombinedTrendChart
-            title="性能趋势（按小时）"
-            data={hourly}
-            xField="hour"
-            loading={loading && !stats}
-            series={TREND_SERIES}
-          />
-        ) : (
-          <CombinedTrendChart
-            title="性能趋势（按天）"
-            data={daily}
-            xField="date"
-            loading={loading && !stats}
-            series={TREND_SERIES}
-          />
-        )}
+        <CombinedTrendChart
+          title="性能趋势（按天）"
+          data={daily}
+          xField="date"
+          loading={loading && !stats}
+          series={TREND_SERIES}
+        />
+
+        <CombinedTrendChart
+          title="性能趋势（按小时）"
+          data={hourlyOfDay}
+          xField="hour"
+          loading={loading && !stats}
+          series={TREND_SERIES}
+          extra={
+            <DatePicker
+              value={hourlyDay}
+              allowClear={false}
+              disabledDate={(current) => {
+                if (!current) return false;
+                return (
+                  current.isBefore(rangeStart, 'day') ||
+                  current.isAfter(rangeEnd, 'day')
+                );
+              }}
+              onChange={(value) => {
+                if (value) setHourlyDay(value.startOf('day'));
+              }}
+            />
+          }
+        />
 
         <PerformanceUrlTopList
           title="慢页面 Top（FCP）"

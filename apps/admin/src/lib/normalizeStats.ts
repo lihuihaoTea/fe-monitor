@@ -165,7 +165,6 @@ export function normalizeStats(
   end: Dayjs
 ): StatsResponse {
   const performanceRaw = raw?.performance || ({} as StatsResponse['performance']);
-  const singleDay = start.format('YYYY-MM-DD') === end.format('YYYY-MM-DD');
 
   return {
     errors: {
@@ -195,15 +194,14 @@ export function normalizeStats(
       totalClicks: toNumber(raw?.behavior?.totalClicks),
     },
     daily: fillDailyRange(raw?.daily, start, end),
-    hourly: singleDay
-      ? fillHourlyRange(raw?.hourly, start)
-      : (raw?.hourly || []).map((item) => ({
-          hour: item.hour || '',
-          fcp: toNumber(item.fcp),
-          lcp: toNumber(item.lcp),
-          load: toNumber(item.load),
-          domReady: toNumber(item.domReady),
-        })),
+    // 保留区间内全部小时点，由看板按所选日再 fill 24 点
+    hourly: (raw?.hourly || []).map((item) => ({
+      hour: item.hour || '',
+      fcp: toNumber(item.fcp),
+      lcp: toNumber(item.lcp),
+      load: toNumber(item.load),
+      domReady: toNumber(item.domReady),
+    })),
     perfByUrl: {
       fcp: normalizeUrlRows(raw?.perfByUrl?.fcp),
       lcp: normalizeUrlRows(raw?.perfByUrl?.lcp),
