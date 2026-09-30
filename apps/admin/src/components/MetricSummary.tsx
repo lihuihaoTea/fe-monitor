@@ -1,6 +1,6 @@
-import { Card, Col, Row, Statistic, Typography } from 'antd';
-import { chartColorAt } from '@/lib/chartColors';
-import { formatNumber } from '@/lib/format';
+import { Card, Col, Row, Statistic, Typography } from "antd";
+import { chartColorAt } from "@/lib/chartColors";
+import { formatNumber } from "@/lib/format";
 
 export interface SummaryItem {
   title: string;
@@ -33,13 +33,13 @@ export function MetricSummary({
         {items.map((item, index) => {
           const raw = item.value;
           const value =
-            typeof raw === 'number'
+            typeof raw === "number"
               ? Number.isFinite(raw)
                 ? raw
                 : 0
-              : raw == null || raw === ''
-                ? 0
-                : raw;
+              : raw == null || raw === ""
+              ? 0
+              : raw;
 
           return (
             <Col
@@ -47,14 +47,18 @@ export function MetricSummary({
               xs={12}
               sm={8}
               md={colSpan}
-              flex={items.length === 5 ? '1 1 160px' : undefined}
+              flex={items.length === 5 ? "1 1 160px" : undefined}
             >
               <div className="monitor-metric-tile">
                 <Statistic
                   title={item.title}
-                  value={typeof value === 'number' ? value : Number(value) || 0}
+                  value={typeof value === "number" ? value : Number(value) || 0}
                   suffix={item.suffix}
-                  valueStyle={{ color: item.color || chartColorAt(index) }}
+                  styles={{
+                    content: {
+                      color: item.color || chartColorAt(index),
+                    },
+                  }}
                   formatter={(val) =>
                     formatNumber(Number(val), { precision: item.precision })
                   }

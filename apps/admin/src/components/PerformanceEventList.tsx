@@ -166,7 +166,7 @@ export function PerformanceEventList({
     showQuickJumper: true,
     pageSizeOptions: LIST_LIMIT_OPTIONS.map(String),
     showTotal: (t) => `共 ${formatNumber(t)} 条`,
-    position: ['bottomCenter'],
+    placement: ['bottomCenter'],
   };
 
   return (

@@ -1,7 +1,6 @@
-
-import { Card } from 'antd';
-import { Line } from '@ant-design/charts';
-import type { DailyPoint } from '@/lib/types';
+import { Card } from "antd";
+import { Line } from "@ant-design/charts";
+import type { DailyPoint } from "@/lib/types";
 
 interface TrendChartProps {
   title: string;
@@ -11,7 +10,13 @@ interface TrendChartProps {
   unit?: string;
 }
 
-export function TrendChart({ title, data, yField, loading, unit }: TrendChartProps) {
+export function TrendChart({
+  title,
+  data,
+  yField,
+  loading,
+  unit,
+}: TrendChartProps) {
   const chartData = (data || []).map((item) => ({
     ...item,
     [yField]: Number(item[yField]) || 0,
@@ -19,7 +24,7 @@ export function TrendChart({ title, data, yField, loading, unit }: TrendChartPro
 
   const config = {
     data: chartData,
-    xField: 'date',
+    xField: "date",
     yField: yField as string,
     height: 280,
     smooth: true,
