@@ -331,22 +331,23 @@ export async function applyRollupWithClient(client, event) {
 }
 /**
  * rebuild / stats 查询用：与 normalizePageUrl 对齐。
- * 用 [?] 字面量，避免 PG POSIX 正则把 ? 当量词。
+ * 注意：本项目 SQL 用 `?` 作占位符，字面量问号必须写 CHR(63)，否则会被 pgPlaceholders 吃掉。
  * @param col URL 列表达式，默认 `url`
  */
 export function sqlNormalizePageUrl(col = 'url') {
+    // CHR(63) = '?'
     return `
   LEFT(
     CASE
       WHEN NULLIF(TRIM(${col}), '') IS NULL THEN '(empty)'
       WHEN POSITION('#/' IN ${col}) > 0 OR POSITION('#!/' IN ${col}) > 0 THEN
         regexp_replace(
-          regexp_replace(TRIM(${col}), '[?][^#]*', ''),
-          '(#[^?]*)[?].*$',
+          regexp_replace(TRIM(${col}), '[' || CHR(63) || '][^#]*', ''),
+          '(#[^' || CHR(63) || ']*)[' || CHR(63) || '].*$',
           '\\1'
         )
       ELSE
-        SPLIT_PART(SPLIT_PART(TRIM(${col}), '?', 1), '#', 1)
+        SPLIT_PART(SPLIT_PART(TRIM(${col}), CHR(63), 1), '#', 1)
     END,
     500
   )
