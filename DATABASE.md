@@ -213,7 +213,7 @@ pnpm db:rebuild-daily    # 全量重建（事务+锁表，防并发冲突）
 | app_id | text | - | 应用 ID |
 | date | date | - | 日期 |
 | metric | text | - | `fcp` / `lcp` / `load` / `dom_ready` |
-| url | text | - | 规范化 URL（去 query/hash，最长 500） |
+| url | text | - | 规范化 URL（去 query；保留 `#/` / `#!/` hash 路由，最长 500） |
 | value_sum | bigint | 0 | 总和（ms） |
 | value_count | int | 0 | 样本数 |
 | value_min / value_max | bigint | NULL | 最小/最大 |
@@ -230,7 +230,7 @@ pnpm db:rebuild-daily    # 全量重建（事务+锁表，防并发冲突）
 |------|------|--------|------|
 | app_id | text | - | 应用 ID |
 | date | date | - | 日期 |
-| url | text | - | 规范化 URL（去 query/hash，最长 500） |
+| url | text | - | 规范化 URL（去 query；保留 `#/` / `#!/` hash 路由，最长 500） |
 | pv | int | 0 | 当日该页 PV |
 
 - **主键**: `(app_id, date, url)`
