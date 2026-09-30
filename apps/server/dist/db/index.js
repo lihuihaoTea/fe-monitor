@@ -12,6 +12,8 @@ if (!databaseUrl) {
 }
 export const pool = new Pool({
     connectionString: databaseUrl,
+    max: Number(process.env.PG_POOL_MAX) || 20,
+    idleTimeoutMillis: 30000,
 });
 pool.on('error', (err) => {
     console.error('[pg] unexpected error on idle client', err);
@@ -77,6 +79,12 @@ export async function initDB() {
     CREATE INDEX IF NOT EXISTS idx_events_visitor_id ON events(visitor_id);
     CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at);
     CREATE INDEX IF NOT EXISTS idx_events_app_ts ON events(app_id, timestamp);
+    -- 看板 / 列表高频：app + type + 时间
+    CREATE INDEX IF NOT EXISTS idx_events_app_type_ts
+      ON events(app_id, type, timestamp);
+    -- 带 sub_type 的过滤（js/promise、pv/stay、fcp/lcp 等）
+    CREATE INDEX IF NOT EXISTS idx_events_app_type_subtype_ts
+      ON events(app_id, type, sub_type, timestamp);
 
     CREATE TABLE IF NOT EXISTS event_filters (
       id SERIAL PRIMARY KEY,
@@ -90,8 +98,62 @@ export async function initDB() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_event_filters_enabled ON event_filters(enabled);
+
+    -- 日聚合：看板 stats 只读这些表
+    CREATE TABLE IF NOT EXISTS event_daily_stats (
+      app_id TEXT NOT NULL,
+      date DATE NOT NULL,
+      js_errors INT NOT NULL DEFAULT 0,
+      resource_errors INT NOT NULL DEFAULT 0,
+      api_errors INT NOT NULL DEFAULT 0,
+      blank_screens INT NOT NULL DEFAULT 0,
+      not_found_404 INT NOT NULL DEFAULT 0,
+      other_issues INT NOT NULL DEFAULT 0,
+      pv INT NOT NULL DEFAULT 0,
+      clicks INT NOT NULL DEFAULT 0,
+      stay_duration_sum BIGINT NOT NULL DEFAULT 0,
+      stay_count INT NOT NULL DEFAULT 0,
+      fcp_sum BIGINT NOT NULL DEFAULT 0,
+      fcp_count INT NOT NULL DEFAULT 0,
+      lcp_sum BIGINT NOT NULL DEFAULT 0,
+      lcp_count INT NOT NULL DEFAULT 0,
+      load_sum BIGINT NOT NULL DEFAULT 0,
+      load_count INT NOT NULL DEFAULT 0,
+      dom_ready_sum BIGINT NOT NULL DEFAULT 0,
+      dom_ready_count INT NOT NULL DEFAULT 0,
+      PRIMARY KEY (app_id, date)
+    );
+
+    CREATE TABLE IF NOT EXISTS event_daily_error_types (
+      app_id TEXT NOT NULL,
+      date DATE NOT NULL,
+      sub_type TEXT NOT NULL,
+      count INT NOT NULL DEFAULT 0,
+      PRIMARY KEY (app_id, date, sub_type)
+    );
+
+    CREATE TABLE IF NOT EXISTS event_daily_visitors (
+      app_id TEXT NOT NULL,
+      date DATE NOT NULL,
+      visitor_id TEXT NOT NULL,
+      PRIMARY KEY (app_id, date, visitor_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_daily_stats_date
+      ON event_daily_stats(date);
+    CREATE INDEX IF NOT EXISTS idx_daily_visitors_app_date
+      ON event_daily_visitors(app_id, date);
   `);
     await seedDefaultFilters();
+    // 已有明细但无日聚合时自动回填一次
+    const dailyCount = await queryOne(`SELECT COUNT(*)::int as count FROM event_daily_stats`);
+    const eventCount = await queryOne(`SELECT COUNT(*)::int as count FROM events`);
+    if (Number(dailyCount?.count) === 0 && Number(eventCount?.count) > 0) {
+        console.log('检测到历史 events，开始重建日聚合…');
+        const { rebuildDailyStats } = await import('./dailyStats.js');
+        await rebuildDailyStats();
+        console.log('日聚合重建完成');
+    }
     console.log('Database initialized successfully');
 }
 /** 首次初始化写入默认筛除项（已存在则跳过） */

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge, Card, Input, Space, Table, Typography, theme } from "antd";
 import type { TablePaginationConfig } from "antd";
 import type { SorterResult } from "antd/es/table/interface";
@@ -64,6 +64,11 @@ export function PerformanceEventList({
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<ListLimit>(50);
   const [total, setTotal] = useState(0);
+  const [pageCursors, setPageCursors] = useState<
+    Array<{ cursorTs: number; cursorId: number } | null>
+  >([null]);
+  const pageCursorsRef = useRef(pageCursors);
+  pageCursorsRef.current = pageCursors;
   const [urlKeyword, setUrlKeyword] = useState("");
   const [urlInput, setUrlInput] = useState("");
   const [data, setData] = useState<LatestErrorItem[]>([]);
@@ -78,9 +83,17 @@ export function PerformanceEventList({
   const querySubType = metric === "domReady" ? "load" : metric;
   const valueSortBy: SortBy = metric === "domReady" ? "domReady" : "value";
 
+  const resetPaging = () => {
+    setPage(1);
+    setPageCursors([null]);
+  };
+
   const loadList = useCallback(async () => {
     setLoading(true);
     try {
+      const canKeyset = sortBy === "timestamp";
+      const cursor =
+        canKeyset && page > 1 ? pageCursorsRef.current[page - 1] : null;
       const result = await fetchLatestEvents({
         appId,
         startDate,
@@ -92,9 +105,20 @@ export function PerformanceEventList({
         urlKeyword: urlKeyword || undefined,
         sortBy,
         sortOrder,
+        ...(cursor
+          ? { cursorTs: cursor.cursorTs, cursorId: cursor.cursorId }
+          : {}),
       });
       setData(result.list);
       setTotal(result.total);
+      if (canKeyset && result.nextCursor) {
+        setPageCursors((prev) => {
+          const next = prev.slice();
+          while (next.length < page) next.push(null);
+          next[page] = result.nextCursor!;
+          return next;
+        });
+      }
     } catch (error) {
       console.error(error);
       setData([]);
@@ -121,7 +145,7 @@ export function PerformanceEventList({
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setUrlKeyword(urlInput.trim());
-      setPage(1);
+      resetPaging();
     }, 300);
     return () => window.clearTimeout(timer);
   }, [urlInput]);
@@ -186,7 +210,7 @@ export function PerformanceEventList({
               onChange={(e) => setUrlInput(e.target.value)}
               onSearch={(value) => {
                 setUrlKeyword(value.trim());
-                setPage(1);
+                resetPaging();
               }}
               enterButton
             />
@@ -215,7 +239,7 @@ export function PerformanceEventList({
               setSortBy(valueSortBy);
               setSortOrder(single.order);
             }
-            setPage(1);
+            resetPaging();
             return;
           }
 
@@ -224,7 +248,7 @@ export function PerformanceEventList({
             const nextPage = nextPagination.current || 1;
             if (nextSize && nextSize !== pageSize) {
               setPageSize(nextSize as ListLimit);
-              setPage(1);
+              resetPaging();
             } else {
               setPage(nextPage);
             }
@@ -243,8 +267,8 @@ export function PerformanceEventList({
             key: "value",
             width: 140,
             sorter: true,
-            // 默认不排序 → 降序 → 升序 → 取消
             sortDirections: ["descend", "ascend"],
+            sortOrder: sortBy === valueSortBy ? sortOrder : null,
             render: (_: unknown, record: LatestErrorItem) => {
               const value = metricValue(record, metric);
               return formatDuration(value);

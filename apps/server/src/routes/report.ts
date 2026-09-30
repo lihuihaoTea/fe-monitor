@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { clientQuery, withTransaction } from '../db/index.js';
 import { shouldFilterEvent } from '../filters/eventFilters.js';
+import { applyRollupWithClient } from '../db/dailyStats.js';
+import { invalidateStatsCache } from './stats.js';
 
 export const reportRouter = Router();
 
@@ -59,6 +61,7 @@ reportRouter.post('/', async (req, res) => {
     const now = Date.now();
     let inserted = 0;
     let filtered = 0;
+    const touchedApps = new Set<string>();
 
     const toInsert: Array<{
       type: string;
@@ -70,7 +73,7 @@ reportRouter.post('/', async (req, res) => {
       url: string;
       userAgent: string;
       clientIp: string;
-      data: string;
+      data: Record<string, unknown>;
       createdAt: number;
     }> = [];
 
@@ -95,7 +98,10 @@ reportRouter.post('/', async (req, res) => {
         url: event.url,
         userAgent,
         clientIp,
-        data: JSON.stringify(event.data ?? {}),
+        data:
+          event.data && typeof event.data === 'object' && !Array.isArray(event.data)
+            ? event.data
+            : { value: event.data },
         createdAt: now,
       });
     }
@@ -120,16 +126,31 @@ reportRouter.post('/', async (req, res) => {
                 row.url,
                 row.userAgent,
                 row.clientIp,
-                row.data,
+                JSON.stringify(row.data),
                 row.createdAt,
               ]
             );
+
+            await applyRollupWithClient(client, {
+              type: row.type,
+              subType: row.subType,
+              timestamp: row.timestamp,
+              appId: row.appId,
+              visitorId: row.visitorId,
+              data: row.data,
+            });
+
             inserted++;
+            touchedApps.add(row.appId);
           } catch (err) {
             console.error('Insert error:', err);
           }
         }
       });
+
+      for (const appId of touchedApps) {
+        invalidateStatsCache(appId);
+      }
     }
 
     res.json({ success: true, inserted, filtered });

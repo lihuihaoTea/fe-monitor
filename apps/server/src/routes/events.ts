@@ -32,21 +32,29 @@ const SORT_EXPRESSIONS: Record<string, string> = {
   domReady: `(data->>'domReady')::float`,
 };
 
-function parseSortClause(sortByRaw: unknown, sortOrderRaw: unknown): string {
-  const sortBy = queryString(sortByRaw);
+function parseSort(
+  sortByRaw: unknown,
+  sortOrderRaw: unknown
+): { sortBy: string; order: 'ASC' | 'DESC'; orderSql: string } {
+  const sortBy = queryString(sortByRaw) || 'timestamp';
   const expr = SORT_EXPRESSIONS[sortBy] || SORT_EXPRESSIONS.timestamp;
   const orderRaw = queryString(sortOrderRaw).toLowerCase();
   const order =
     orderRaw === 'ascend' || orderRaw === 'asc' ? 'ASC' : 'DESC';
   if (expr === 'timestamp') {
-    return `ORDER BY timestamp ${order}`;
+    return {
+      sortBy: 'timestamp',
+      order,
+      orderSql: `ORDER BY timestamp ${order}, id ${order}`,
+    };
   }
-  return `ORDER BY ${expr} ${order} NULLS LAST, timestamp DESC`;
+  return {
+    sortBy,
+    order,
+    orderSql: `ORDER BY ${expr} ${order} NULLS LAST, timestamp DESC, id DESC`,
+  };
 }
 
-/**
- * GET /api/events/sub-types
- */
 eventsRouter.get('/sub-types', async (req, res) => {
   try {
     const { appId, startDate, endDate } = req.query;
@@ -90,9 +98,6 @@ eventsRouter.get('/sub-types', async (req, res) => {
   }
 });
 
-/**
- * GET /api/events/latest
- */
 eventsRouter.get('/latest', async (req, res) => {
   try {
     const { appId, startDate, endDate, subType } = req.query;
@@ -102,6 +107,10 @@ eventsRouter.get('/latest', async (req, res) => {
     const limit = parseLatestLimit(req.query.limit ?? req.query.latestLimit);
     const page = parsePage(req.query.page);
     const offset = (page - 1) * limit;
+    const { sortBy, order, orderSql } = parseSort(
+      req.query.sortBy,
+      req.query.sortOrder
+    );
 
     if (!appId || typeof appId !== 'string') {
       return res.status(400).json({ error: 'appId is required' });
@@ -116,22 +125,22 @@ eventsRouter.get('/latest', async (req, res) => {
     const end = parseRangeBound(endDate, 'end');
     const whereCategory = categoryWhereSql(category);
 
-    const conditions: string[] = [
+    const baseConditions: string[] = [
       'app_id = ?',
       whereCategory,
       'timestamp >= ?',
       'timestamp <= ?',
     ];
-    const params: Array<string | number> = [appId, start, end];
+    const baseParams: Array<string | number> = [appId, start, end];
 
     const subTypeValue = queryString(subType);
     if (subTypeValue) {
-      conditions.push('sub_type = ?');
-      params.push(subTypeValue);
+      baseConditions.push('sub_type = ?');
+      baseParams.push(subTypeValue);
     }
 
     if (messageKeyword) {
-      conditions.push(`(
+      baseConditions.push(`(
         COALESCE(data->>'message', '') LIKE ?
         OR COALESCE(data->>'resourceUrl', '') LIKE ?
         OR COALESCE(data->>'apiUrl', '') LIKE ?
@@ -140,43 +149,74 @@ eventsRouter.get('/latest', async (req, res) => {
         OR data::text LIKE ?
       )`);
       const like = `%${messageKeyword}%`;
-      params.push(like, like, like, like, like, like);
+      baseParams.push(like, like, like, like, like, like);
     }
 
     if (urlKeyword) {
-      conditions.push('url LIKE ?');
-      params.push(`%${urlKeyword}%`);
+      baseConditions.push('url LIKE ?');
+      baseParams.push(`%${urlKeyword}%`);
     }
 
-    const whereSql = conditions.join(' AND ');
-    const orderSql = parseSortClause(req.query.sortBy, req.query.sortOrder);
+    const cursorTs = Number(req.query.cursorTs);
+    const cursorId = Number(req.query.cursorId);
+    const useKeyset =
+      sortBy === 'timestamp' &&
+      Number.isFinite(cursorTs) &&
+      Number.isFinite(cursorId) &&
+      cursorId > 0;
 
-    const totalRow = await queryOne<{ total: string | number }>(
-      `SELECT COUNT(*)::int as total FROM events WHERE ${whereSql}`,
-      params
-    );
+    const listConditions = [...baseConditions];
+    const listParams = [...baseParams];
+    if (useKeyset) {
+      listConditions.push(
+        order === 'DESC' ? '(timestamp, id) < (?, ?)' : '(timestamp, id) > (?, ?)'
+      );
+      listParams.push(cursorTs, cursorId);
+    }
 
-    const rows = await query<{
-      id: number;
-      type: string;
-      sub_type: string | null;
-      timestamp: string | number;
-      url: string;
-      data: unknown;
-    }>(
-      `SELECT id, type, sub_type, timestamp, url, data
+    const baseWhere = baseConditions.join(' AND ');
+    const listWhere = listConditions.join(' AND ');
+
+    let listSql = `SELECT id, type, sub_type, timestamp, url, data
        FROM events
-       WHERE ${whereSql}
+       WHERE ${listWhere}
        ${orderSql}
-       LIMIT ${limit} OFFSET ${offset}`,
-      params
-    );
+       LIMIT ${limit}`;
+    if (!useKeyset) {
+      listSql += ` OFFSET ${offset}`;
+    }
+
+    const [totalRow, rows] = await Promise.all([
+      queryOne<{ total: string | number }>(
+        `SELECT COUNT(*)::int as total FROM events WHERE ${baseWhere}`,
+        baseParams
+      ),
+      query<{
+        id: number;
+        type: string;
+        sub_type: string | null;
+        timestamp: string | number;
+        url: string;
+        data: unknown;
+      }>(listSql, listParams),
+    ]);
+
+    const last = rows[rows.length - 1];
+    const nextCursor =
+      last && sortBy === 'timestamp'
+        ? {
+            cursorTs: Number(last.timestamp),
+            cursorId: Number(last.id),
+          }
+        : null;
 
     res.json({
       category,
       page,
       limit,
       total: Number(totalRow?.total) || 0,
+      nextCursor,
+      paginationMode: useKeyset ? 'keyset' : 'offset',
       filters: {
         subType: subTypeValue || null,
         messageKeyword: messageKeyword || null,

@@ -62,6 +62,12 @@ export async function fetchLatestEvents(
   if (params.urlKeyword) url.searchParams.set('urlKeyword', params.urlKeyword);
   if (params.sortBy) url.searchParams.set('sortBy', params.sortBy);
   if (params.sortOrder) url.searchParams.set('sortOrder', params.sortOrder);
+  if (params.cursorTs != null) {
+    url.searchParams.set('cursorTs', String(params.cursorTs));
+  }
+  if (params.cursorId != null) {
+    url.searchParams.set('cursorId', String(params.cursorId));
+  }
 
   const res = await fetch(url.toString());
   if (!res.ok) {
@@ -73,6 +79,8 @@ export async function fetchLatestEvents(
     page: Number(data.page) || 1,
     limit: data.limit,
     total: data.total || 0,
+    nextCursor: data.nextCursor ?? null,
+    paginationMode: data.paginationMode,
     list: (data.list || []).map(normalizeLatestItem),
   };
 }

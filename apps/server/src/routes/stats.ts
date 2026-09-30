@@ -1,17 +1,26 @@
 import { Router } from 'express';
 import { query, queryOne } from '../db/index.js';
-import {
-  JS_ERROR_SQL,
-  NOT_FOUND_SQL,
-  OTHER_ISSUE_SQL,
-  parseRangeBound,
-} from './eventQuery.js';
+import { parseRangeBound } from './eventQuery.js';
 
 export const statsRouter = Router();
 
+const n = (v: string | number | null | undefined) => Number(v) || 0;
+
+const CACHE_TTL_MS = Number(process.env.STATS_CACHE_TTL_MS) || 45_000;
+const statsCache = new Map<string, { expires: number; payload: unknown }>();
+
+function cacheKey(appId: string, startDate: unknown, endDate: unknown) {
+  return `${appId}|${String(startDate || '')}|${String(endDate || '')}`;
+}
+
+function avg(sum: number, count: number) {
+  if (!count) return 0;
+  return Math.round(sum / count);
+}
+
 /**
  * GET /api/stats
- * 看板汇总：指标 + 趋势 + 错误类型分布（不含最新列表，列表走 /api/events）
+ * 从日聚合表读取，带短缓存（默认 45s）
  */
 statsRouter.get('/', async (req, res) => {
   try {
@@ -21,190 +30,183 @@ statsRouter.get('/', async (req, res) => {
       return res.status(400).json({ error: 'appId is required' });
     }
 
+    const key = cacheKey(appId, startDate, endDate);
+    const cached = statsCache.get(key);
+    if (cached && cached.expires > Date.now()) {
+      res.setHeader('X-Stats-Cache', 'HIT');
+      return res.json(cached.payload);
+    }
+
     const start = parseRangeBound(startDate, 'start');
     const end = parseRangeBound(endDate, 'end');
-    const rangeParams = [appId, start, end];
+    // 聚合表按 DATE；用本地日界对齐 parseRangeBound 的日字符串
+    const startDay =
+      typeof startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(startDate)
+        ? startDate
+        : new Date(start).toISOString().slice(0, 10);
+    const endDay =
+      typeof endDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(endDate)
+        ? endDate
+        : new Date(end).toISOString().slice(0, 10);
 
-    const errorStats = await query<{ sub_type: string; count: string | number }>(
-      `SELECT sub_type, COUNT(*)::int as count
-       FROM events
-       WHERE app_id = ? AND ${JS_ERROR_SQL} AND timestamp >= ? AND timestamp <= ?
-       GROUP BY sub_type`,
-      rangeParams
-    );
+    const dayParams = [appId, startDay, endDay];
 
-    const resourceErrors = await queryOne<{ count: string | number }>(
-      `SELECT COUNT(*)::int as count FROM events
-       WHERE app_id = ? AND type = 'resource' AND timestamp >= ? AND timestamp <= ?`,
-      rangeParams
-    );
+    const [summary, errorTypes, uvRow, dailyRows] = await Promise.all([
+      queryOne<Record<string, string | number>>(
+        `SELECT
+           COALESCE(SUM(js_errors), 0)::int as js_errors,
+           COALESCE(SUM(resource_errors), 0)::int as resource_errors,
+           COALESCE(SUM(api_errors), 0)::int as api_errors,
+           COALESCE(SUM(blank_screens), 0)::int as blank_screens,
+           COALESCE(SUM(not_found_404), 0)::int as not_found_404,
+           COALESCE(SUM(other_issues), 0)::int as other_issues,
+           COALESCE(SUM(pv), 0)::int as pv,
+           COALESCE(SUM(clicks), 0)::int as clicks,
+           COALESCE(SUM(stay_duration_sum), 0)::bigint as stay_duration_sum,
+           COALESCE(SUM(stay_count), 0)::int as stay_count,
+           COALESCE(SUM(fcp_sum), 0)::bigint as fcp_sum,
+           COALESCE(SUM(fcp_count), 0)::int as fcp_count,
+           COALESCE(SUM(lcp_sum), 0)::bigint as lcp_sum,
+           COALESCE(SUM(lcp_count), 0)::int as lcp_count,
+           COALESCE(SUM(load_sum), 0)::bigint as load_sum,
+           COALESCE(SUM(load_count), 0)::int as load_count,
+           COALESCE(SUM(dom_ready_sum), 0)::bigint as dom_ready_sum,
+           COALESCE(SUM(dom_ready_count), 0)::int as dom_ready_count
+         FROM event_daily_stats
+         WHERE app_id = ? AND date >= ?::date AND date <= ?::date`,
+        dayParams
+      ),
 
-    const apiErrors = await queryOne<{ count: string | number }>(
-      `SELECT COUNT(*)::int as count FROM events
-       WHERE app_id = ? AND type = 'api' AND timestamp >= ? AND timestamp <= ?`,
-      rangeParams
-    );
+      query<{ sub_type: string; count: string | number }>(
+        `SELECT sub_type, SUM(count)::int as count
+         FROM event_daily_error_types
+         WHERE app_id = ? AND date >= ?::date AND date <= ?::date
+           AND sub_type IN ('js', 'promise')
+         GROUP BY sub_type
+         ORDER BY count DESC`,
+        dayParams
+      ),
 
-    const blankScreens = await queryOne<{ count: string | number }>(
-      `SELECT COUNT(*)::int as count FROM events
-       WHERE app_id = ? AND type = 'blank' AND timestamp >= ? AND timestamp <= ?`,
-      rangeParams
-    );
+      queryOne<{ count: string | number }>(
+        `SELECT COUNT(DISTINCT visitor_id)::int as count
+         FROM event_daily_visitors
+         WHERE app_id = ? AND date >= ?::date AND date <= ?::date`,
+        dayParams
+      ),
 
-    const notFound404 = await queryOne<{ count: string | number }>(
-      `SELECT COUNT(*)::int as count FROM events
-       WHERE app_id = ? AND ${NOT_FOUND_SQL} AND timestamp >= ? AND timestamp <= ?`,
-      rangeParams
-    );
+      query<Record<string, any>>(
+        `SELECT
+           to_char(s.date, 'YYYY-MM-DD') as date,
+           s.js_errors as errors,
+           s.resource_errors as "resourceErrors",
+           s.api_errors as "apiErrors",
+           s.blank_screens as "blankScreens",
+           s.not_found_404 as "notFound404",
+           s.other_issues as "otherIssues",
+           s.pv,
+           s.clicks,
+           CASE WHEN s.stay_count > 0
+             THEN ROUND(s.stay_duration_sum::numeric / s.stay_count)
+             ELSE 0 END as "avgStay",
+           CASE WHEN s.fcp_count > 0
+             THEN ROUND(s.fcp_sum::numeric / s.fcp_count) ELSE 0 END as fcp,
+           CASE WHEN s.lcp_count > 0
+             THEN ROUND(s.lcp_sum::numeric / s.lcp_count) ELSE 0 END as lcp,
+           CASE WHEN s.load_count > 0
+             THEN ROUND(s.load_sum::numeric / s.load_count) ELSE 0 END as load,
+           CASE WHEN s.dom_ready_count > 0
+             THEN ROUND(s.dom_ready_sum::numeric / s.dom_ready_count)
+             ELSE 0 END as "domReady",
+           COALESCE(v.uv, 0)::int as uv
+         FROM event_daily_stats s
+         LEFT JOIN (
+           SELECT date, COUNT(*)::int as uv
+           FROM event_daily_visitors
+           WHERE app_id = ? AND date >= ?::date AND date <= ?::date
+           GROUP BY date
+         ) v ON v.date = s.date
+         WHERE s.app_id = ? AND s.date >= ?::date AND s.date <= ?::date
+         ORDER BY s.date ASC
+         LIMIT 90`,
+        [...dayParams, ...dayParams]
+      ),
+    ]);
 
-    const otherIssues = await queryOne<{ count: string | number }>(
-      `SELECT COUNT(*)::int as count FROM events
-       WHERE app_id = ? AND ${OTHER_ISSUE_SQL} AND timestamp >= ? AND timestamp <= ?`,
-      rangeParams
-    );
+    const s = summary || {};
+    const rowNum = (key: string) => n(s[key]);
 
-    const performanceMetrics = await query<{
-      metric: string;
-      avg_value: string | number | null;
-    }>(
-      `SELECT sub_type as metric,
-              AVG((data->>'value')::float) as avg_value
-       FROM events
-       WHERE app_id = ? AND type = 'performance' AND timestamp >= ? AND timestamp <= ?
-       GROUP BY sub_type`,
-      rangeParams
-    );
-
-    // SDK 将 domReady 嵌在 load 事件的 data.domReady，无独立 sub_type
-    const domReadyAvg = await queryOne<{ avg_value: string | number | null }>(
-      `SELECT AVG((data->>'domReady')::float) as avg_value
-       FROM events
-       WHERE app_id = ? AND type = 'performance' AND sub_type = 'load'
-         AND timestamp >= ? AND timestamp <= ?
-         AND data->>'domReady' IS NOT NULL`,
-      rangeParams
-    );
-
-    const pvCount = await queryOne<{ count: string | number }>(
-      `SELECT COUNT(*)::int as count FROM events
-       WHERE app_id = ? AND type = 'behavior' AND sub_type = 'pv'
-         AND timestamp >= ? AND timestamp <= ?`,
-      rangeParams
-    );
-
-    const avgStay = await queryOne<{ avg_duration: string | number | null }>(
-      `SELECT AVG((data->>'duration')::float) as avg_duration
-       FROM events
-       WHERE app_id = ? AND type = 'behavior' AND sub_type = 'stay'
-         AND timestamp >= ? AND timestamp <= ?`,
-      rangeParams
-    );
-
-    const clickStats = await queryOne<{ total_clicks: string | number | null }>(
-      `SELECT COALESCE(SUM((data->>'clickCount')::int), 0)::int as total_clicks
-       FROM events
-       WHERE app_id = ? AND type = 'behavior' AND sub_type = 'stay'
-         AND timestamp >= ? AND timestamp <= ?`,
-      rangeParams
-    );
-
-    const uvCount = await queryOne<{ count: string | number }>(
-      `SELECT COUNT(DISTINCT client_ip)::int as count FROM events
-       WHERE app_id = ? AND timestamp >= ? AND timestamp <= ?`,
-      rangeParams
-    );
-
-    // 驼峰别名必须双引号，否则 pg 会折成小写（resourceErrors → resourceerrors）
-    const dailyRows = await query<Record<string, any>>(
-      `SELECT
-          to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD') as date,
-          COUNT(CASE WHEN type = 'behavior' AND sub_type = 'pv' THEN 1 END)::int as pv,
-          COUNT(DISTINCT CASE WHEN type = 'behavior' AND sub_type = 'pv' THEN visitor_id END)::int as uv,
-          COUNT(CASE WHEN ${JS_ERROR_SQL} THEN 1 END)::int as errors,
-          COUNT(CASE WHEN type = 'resource' THEN 1 END)::int as "resourceErrors",
-          COUNT(CASE WHEN type = 'api' THEN 1 END)::int as "apiErrors",
-          COUNT(CASE WHEN type = 'blank' THEN 1 END)::int as "blankScreens",
-          COUNT(CASE WHEN ${NOT_FOUND_SQL} THEN 1 END)::int as "notFound404",
-          COUNT(CASE WHEN ${OTHER_ISSUE_SQL} THEN 1 END)::int as "otherIssues",
-          AVG(CASE WHEN type = 'performance' AND sub_type = 'fcp'
-            THEN (data->>'value')::float END) as fcp,
-          AVG(CASE WHEN type = 'performance' AND sub_type = 'lcp'
-            THEN (data->>'value')::float END) as lcp,
-          AVG(CASE WHEN type = 'performance' AND sub_type = 'load'
-            THEN (data->>'value')::float END) as load,
-          AVG(CASE WHEN type = 'performance' AND sub_type = 'load'
-            THEN (data->>'domReady')::float END) as "domReady",
-          AVG(CASE WHEN type = 'behavior' AND sub_type = 'stay'
-            THEN (data->>'duration')::float END) as "avgStay",
-          COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
-            THEN (data->>'clickCount')::int ELSE 0 END), 0)::int as clicks
-        FROM events
-        WHERE app_id = ? AND timestamp >= ? AND timestamp <= ?
-        GROUP BY to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')
-        ORDER BY date ASC
-        LIMIT 90`,
-      rangeParams
-    );
-
-    const num = (row: Record<string, any>, key: string) =>
-      Number(row[key] ?? row[key.toLowerCase()]) || 0;
-
-    const dailyStats = dailyRows.map((row) => ({
+    const daily = dailyRows.map((row) => ({
       date: row.date,
-      pv: num(row, 'pv'),
-      uv: num(row, 'uv'),
-      errors: num(row, 'errors'),
-      resourceErrors: num(row, 'resourceErrors'),
-      apiErrors: num(row, 'apiErrors'),
-      blankScreens: num(row, 'blankScreens'),
-      notFound404: num(row, 'notFound404'),
-      otherIssues: num(row, 'otherIssues'),
-      fcp: Math.round(num(row, 'fcp')),
-      lcp: Math.round(num(row, 'lcp')),
-      load: Math.round(num(row, 'load')),
-      domReady: Math.round(num(row, 'domReady')),
-      avgStay: Math.round(num(row, 'avgStay')),
-      clicks: num(row, 'clicks'),
+      pv: n(row.pv),
+      uv: n(row.uv),
+      errors: n(row.errors),
+      resourceErrors: n(row.resourceErrors ?? row.resourceerrors),
+      apiErrors: n(row.apiErrors ?? row.apierrors),
+      blankScreens: n(row.blankScreens ?? row.blankscreens),
+      notFound404: n(row.notFound404 ?? row.notfound404),
+      otherIssues: n(row.otherIssues ?? row.otherissues),
+      fcp: n(row.fcp),
+      lcp: n(row.lcp),
+      load: n(row.load),
+      domReady: n(row.domReady ?? row.domready),
+      avgStay: n(row.avgStay ?? row.avgstay),
+      clicks: n(row.clicks),
     }));
 
-    const n = (v: string | number | null | undefined) => Number(v) || 0;
-
-    res.json({
+    const payload = {
       errors: {
-        total: errorStats.reduce((sum, item) => sum + n(item.count), 0),
-        byType: errorStats.map((item) => ({
+        total: rowNum('js_errors'),
+        byType: errorTypes.map((item) => ({
           sub_type: item.sub_type,
           count: n(item.count),
         })),
       },
       stability: {
-        resourceErrors: n(resourceErrors?.count),
-        apiErrors: n(apiErrors?.count),
-        blankScreens: n(blankScreens?.count),
-        notFound404: n(notFound404?.count),
-        otherIssues: n(otherIssues?.count),
+        resourceErrors: rowNum('resource_errors'),
+        apiErrors: rowNum('api_errors'),
+        blankScreens: rowNum('blank_screens'),
+        notFound404: rowNum('not_found_404'),
+        otherIssues: rowNum('other_issues'),
       },
-      performance: (() => {
-        const perf = performanceMetrics.reduce(
-          (acc: Record<string, number>, item) => {
-            acc[item.metric] = Math.round(n(item.avg_value));
-            return acc;
-          },
-          {}
-        );
-        perf.domReady = Math.round(n(domReadyAvg?.avg_value));
-        return perf;
-      })(),
+      performance: {
+        fcp: avg(rowNum('fcp_sum'), rowNum('fcp_count')),
+        lcp: avg(rowNum('lcp_sum'), rowNum('lcp_count')),
+        load: avg(rowNum('load_sum'), rowNum('load_count')),
+        domReady: avg(rowNum('dom_ready_sum'), rowNum('dom_ready_count')),
+      },
       behavior: {
-        pv: n(pvCount?.count),
-        uv: n(uvCount?.count),
-        avgStay: Math.round(n(avgStay?.avg_duration)),
-        totalClicks: n(clickStats?.total_clicks),
+        pv: rowNum('pv'),
+        uv: n(uvRow?.count),
+        avgStay: avg(rowNum('stay_duration_sum'), rowNum('stay_count')),
+        totalClicks: rowNum('clicks'),
       },
-      daily: dailyStats,
-    });
+      daily,
+    };
+
+    statsCache.set(key, { expires: Date.now() + CACHE_TTL_MS, payload });
+    // 简单淘汰：过大时清掉过期项
+    if (statsCache.size > 200) {
+      const now = Date.now();
+      for (const [k, v] of statsCache) {
+        if (v.expires <= now) statsCache.delete(k);
+      }
+    }
+
+    res.setHeader('X-Stats-Cache', 'MISS');
+    res.json(payload);
   } catch (error) {
     console.error('Stats error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+/** 供上报后主动失效缓存（同进程） */
+export function invalidateStatsCache(appId?: string) {
+  if (!appId) {
+    statsCache.clear();
+    return;
+  }
+  for (const key of statsCache.keys()) {
+    if (key.startsWith(`${appId}|`)) statsCache.delete(key);
+  }
+}

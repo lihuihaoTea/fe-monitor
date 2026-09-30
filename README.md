@@ -53,7 +53,11 @@ cp apps/server/.env.example apps/server/.env
 pnpm db:init
 ```
 
-服务首次启动时也会自动建表并写入默认筛除规则。
+服务首次启动时也会自动建表并写入默认筛除规则。若库中已有 `events` 但日聚合为空，启动时会自动回填；也可手动执行：
+
+```bash
+pnpm db:rebuild-daily
+```
 ### 构建 SDK
 
 ```bash

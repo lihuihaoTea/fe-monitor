@@ -65,6 +65,9 @@ export interface EventListQuery {
   /** timestamp | value | domReady */
   sortBy?: 'timestamp' | 'value' | 'domReady';
   sortOrder?: 'ascend' | 'descend';
+  /** keyset：上一页最后一条 */
+  cursorTs?: number;
+  cursorId?: number;
 }
 
 export interface EventListResponse {
@@ -73,6 +76,8 @@ export interface EventListResponse {
   limit: number;
   list: LatestErrorItem[];
   total: number;
+  nextCursor?: { cursorTs: number; cursorId: number } | null;
+  paginationMode?: 'keyset' | 'offset';
 }
 
 export interface SubTypeOption {

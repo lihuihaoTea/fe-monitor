@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Badge,
   Card,
@@ -59,6 +59,11 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<ListLimit>(50);
   const [total, setTotal] = useState(0);
+  const [pageCursors, setPageCursors] = useState<
+    Array<{ cursorTs: number; cursorId: number } | null>
+  >([null]);
+  const pageCursorsRef = useRef(pageCursors);
+  pageCursorsRef.current = pageCursors;
   const [subType, setSubType] = useState<string | undefined>();
   const [messageKeyword, setMessageKeyword] = useState('');
   const [urlKeyword, setUrlKeyword] = useState('');
@@ -70,6 +75,11 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
 
   const startDate = dateRange[0].format('YYYY-MM-DD');
   const endDate = dateRange[1].format('YYYY-MM-DD');
+
+  const resetPaging = () => {
+    setPage(1);
+    setPageCursors([null]);
+  };
 
   const loadTypes = useCallback(async () => {
     try {
@@ -89,6 +99,7 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
   const loadList = useCallback(async () => {
     setLoading(true);
     try {
+      const cursor = page > 1 ? pageCursorsRef.current[page - 1] : null;
       const result = await fetchLatestEvents({
         appId,
         startDate,
@@ -99,9 +110,20 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
         subType,
         messageKeyword: messageKeyword || undefined,
         urlKeyword: urlKeyword || undefined,
+        ...(cursor
+          ? { cursorTs: cursor.cursorTs, cursorId: cursor.cursorId }
+          : {}),
       });
       setData(result.list);
       setTotal(result.total);
+      if (result.nextCursor) {
+        setPageCursors((prev) => {
+          const next = prev.slice();
+          while (next.length < page) next.push(null);
+          next[page] = result.nextCursor!;
+          return next;
+        });
+      }
     } catch (error) {
       console.error(error);
       setData([]);
@@ -134,7 +156,7 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
     const timer = window.setTimeout(() => {
       setMessageKeyword(messageInput.trim());
       setUrlKeyword(urlInput.trim());
-      setPage(1);
+      resetPaging();
     }, 300);
     return () => window.clearTimeout(timer);
   }, [messageInput, urlInput]);
@@ -151,7 +173,7 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
     onChange: (nextPage, nextSize) => {
       if (nextSize && nextSize !== pageSize) {
         setPageSize(nextSize as ListLimit);
-        setPage(1);
+        resetPaging();
       } else {
         setPage(nextPage);
       }
@@ -207,7 +229,7 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
               options={typeOptions}
               onChange={(value) => {
                 setSubType(value);
-                setPage(1);
+                resetPaging();
               }}
             />
             <Input.Search
@@ -218,7 +240,7 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
               onChange={(e) => setMessageInput(e.target.value)}
               onSearch={(value) => {
                 setMessageKeyword(value.trim());
-                setPage(1);
+                resetPaging();
               }}
               enterButton
             />
@@ -230,7 +252,7 @@ export function LatestErrorList({ title, category }: LatestErrorListProps) {
               onChange={(e) => setUrlInput(e.target.value)}
               onSearch={(value) => {
                 setUrlKeyword(value.trim());
-                setPage(1);
+                resetPaging();
               }}
               enterButton
             />
