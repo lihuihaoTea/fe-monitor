@@ -53,7 +53,7 @@ function parseData(data) {
         return data;
     return {};
 }
-/** 去掉 query/hash，限制长度，降低 URL 基数（性能 / PV 共用） */
+/** 去掉 query；保留 pathname；hash 路由保留 #/path 或 #!/path */
 export function normalizePageUrl(raw) {
     const input = (raw || '').trim();
     if (!input)
@@ -61,10 +61,28 @@ export function normalizePageUrl(raw) {
     let normalized = input;
     try {
         const u = new URL(input);
-        normalized = `${u.origin}${u.pathname}`;
+        const rawHash = u.hash || '';
+        const hashNoQuery = rawHash.split('?')[0];
+        const routeHash = hashNoQuery.startsWith('#/') || hashNoQuery.startsWith('#!/')
+            ? hashNoQuery
+            : '';
+        normalized = `${u.origin}${u.pathname}${routeHash}`;
     }
     catch {
-        normalized = input.split(/[?#]/)[0] || input;
+        // 非标准 URL：去掉 ?query，尽量保留 #/ 路由
+        const noSearch = input.replace(/\?[^#]*/, '');
+        const hashIdx = noSearch.indexOf('#');
+        if (hashIdx >= 0) {
+            const before = noSearch.slice(0, hashIdx);
+            const hash = noSearch.slice(hashIdx).split('?')[0];
+            normalized =
+                hash.startsWith('#/') || hash.startsWith('#!/')
+                    ? `${before}${hash}`
+                    : before;
+        }
+        else {
+            normalized = noSearch;
+        }
     }
     if (normalized.length > 500)
         normalized = normalized.slice(0, 500);
@@ -302,6 +320,22 @@ export async function applyRollupWithClient(client, event) {
     }
     await upsertHourlyAndUrl(client, event);
 }
+/** rebuild 用：与 normalizePageUrl 对齐（保留 #/、#!/ hash 路由） */
+const SQL_NORMALIZE_PAGE_URL = `
+  LEFT(
+    CASE
+      WHEN NULLIF(TRIM(url), '') IS NULL THEN '(empty)'
+      WHEN POSITION('#/' IN url) > 0 OR POSITION('#!/' IN url) > 0 THEN
+        regexp_replace(
+          regexp_replace(TRIM(url), '\\?[^#]*', ''),
+          '(#[^?]*)\\?.*$',
+          '\\1'
+        )
+      ELSE SPLIT_PART(SPLIT_PART(TRIM(url), '?', 1), '#', 1)
+    END,
+    500
+  )
+`;
 /** 从 events 全量重建日/小时/URL 聚合 */
 export async function rebuildDailyStats() {
     await withTransaction(async (client) => {
@@ -454,15 +488,7 @@ export async function rebuildDailyStats() {
         app_id,
         to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
         sub_type,
-        LEFT(
-          CASE
-            WHEN NULLIF(TRIM(url), '') IS NULL THEN '(empty)'
-            WHEN POSITION('://' IN url) > 0 THEN
-              SPLIT_PART(SPLIT_PART(url, '?', 1), '#', 1)
-            ELSE SPLIT_PART(SPLIT_PART(url, '?', 1), '#', 1)
-          END,
-          500
-        ),
+        ${SQL_NORMALIZE_PAGE_URL},
         COALESCE(SUM((data->>'value')::bigint), 0)::bigint,
         COUNT(*)::int,
         MIN((data->>'value')::bigint),
@@ -480,13 +506,7 @@ export async function rebuildDailyStats() {
         app_id,
         to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
         'dom_ready',
-        LEFT(
-          CASE
-            WHEN NULLIF(TRIM(url), '') IS NULL THEN '(empty)'
-            ELSE SPLIT_PART(SPLIT_PART(url, '?', 1), '#', 1)
-          END,
-          500
-        ),
+        ${SQL_NORMALIZE_PAGE_URL},
         COALESCE(SUM((data->>'domReady')::bigint), 0)::bigint,
         COUNT(*)::int,
         MIN((data->>'domReady')::bigint),
@@ -502,13 +522,7 @@ export async function rebuildDailyStats() {
       SELECT
         app_id,
         to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
-        LEFT(
-          CASE
-            WHEN NULLIF(TRIM(url), '') IS NULL THEN '(empty)'
-            ELSE SPLIT_PART(SPLIT_PART(url, '?', 1), '#', 1)
-          END,
-          500
-        ),
+        ${SQL_NORMALIZE_PAGE_URL},
         COUNT(*)::int
       FROM events
       WHERE type = 'behavior' AND sub_type = 'pv'
