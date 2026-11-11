@@ -1,10 +1,12 @@
 {
   "name": "fe-monitor-kit",
-  "version": "1.0.4",
-  "description": "前端监控 SDK - 错误 / 性能 / 行为采集",
+  "version": "1.1.3",
+  "description": "前端监控 SDK - 错误 / 性能 / 行为 / 静态资源守卫",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
+  "unpkg": "./dist/fe-monitor.min.js",
+  "jsdelivr": "./dist/fe-monitor.min.js",
   "exports": {
     ".": {
       "import": {
@@ -15,15 +17,22 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
-    }
+    },
+    "./vite": "./vite.mjs",
+    "./min": "./dist/fe-monitor.min.js"
   },
   "files": [
     "dist",
+    "vite.mjs",
     "README.md"
   ],
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/fe-monitor.min.js"
+  ],
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "build": "pnpm build:modules && pnpm build:iife",
+    "build:modules": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "build:iife": "tsup --config tsup.cdn.config.ts && mv dist/fe-monitor.min.global.js dist/fe-monitor.min.js",
     "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
     "prepublishOnly": "npm run build"
   },
@@ -44,7 +53,8 @@
     "frontend",
     "monitoring",
     "sdk",
-    "typescript"
+    "typescript",
+    "asset-guard"
   ],
   "author": "",
   "license": "MIT",

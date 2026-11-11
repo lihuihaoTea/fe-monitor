@@ -53,7 +53,7 @@ export class Reporter {
     return this.userTag;
   }
 
-  report(event: MonitorEvent) {
+  report(event: MonitorEvent, options?: { immediate?: boolean }) {
     const enriched = this.enrichWithUser(event);
     this.queue.push(enriched);
 
@@ -61,7 +61,7 @@ export class Reporter {
       console.log('[FE Monitor] Event:', enriched);
     }
 
-    if (this.queue.length >= this.maxQueueSize) {
+    if (options?.immediate || this.queue.length >= this.maxQueueSize) {
       this.flush();
     }
   }
