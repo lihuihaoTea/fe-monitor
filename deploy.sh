@@ -42,6 +42,14 @@ log "Step 2: 验证构建产物..."
 [ -f "apps/admin/dist/index.html" ] || error "更新后前端构建产物缺失，请手动构建"
 log "构建产物验证通过"
 
+# ===== Step 2.5: 重新构建后端 =====
+log "Step 2.5: 重新构建后端..."
+cd "${PROJECT_DIR}/apps/server" || error "无法进入 server 目录"
+npx tsc 2>&1 | tee -a "${LOG_FILE}" || error "TypeScript 编译失败"
+cd "${PROJECT_DIR}" || error "无法返回项目目录"
+[ -f "apps/server/dist/index.js" ] || error "构建后产物缺失"
+log "后端构建完成"
+
 # ===== Step 3: 重启后端服务 =====
 log "Step 3: 重启后端服务 (PORT=${SERVER_PORT})..."
 pm2 delete "${PM2_NAME}" 2>/dev/null || true

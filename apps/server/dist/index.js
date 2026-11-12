@@ -45,7 +45,7 @@ function scheduleEventPrune() {
     // 启动后 1 分钟跑一次，之后每 6 小时
     setTimeout(() => {
         void run();
-    }, 60000);
+    }, 300000); // 5 minutes after startup to avoid blocking health check
     setInterval(() => {
         void run();
     }, 6 * 60 * 60 * 1000);
