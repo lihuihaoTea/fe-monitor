@@ -1,7 +1,7 @@
 # fe-monitor 数据库设计文档
 
 > 本文档供开发 Agent 使用，描述当前 PostgreSQL 数据库的表结构、索引、约束及业务逻辑。
-> 最后更新：2026-11-12（上报写入单飞：合并 UPSERT，P50 离开行锁）
+> 最后更新：2026-11-12（重建扫描移出排他锁；上报批量 UPSERT；慢查询限时释放连接）
 
 ## 连接信息
 
@@ -166,7 +166,7 @@ pnpm db:filters -- remove --id <id>
 pnpm db:rebuild-daily    # 全量重建（事务+锁表，防并发冲突）
 ```
 
-> ⚠️ 重建会 TRUNCATE **全部聚合表**（日统计、错误类型、访客、小时性能/行为稳定性、URL 性能/PV）后重新 INSERT。事务持有 `ACCESS EXCLUSIVE`，期间聚合 UPSERT 会等待。上报侧每个 Node 进程只让一个写入事务去等这把锁，其余请求在内存队列里合并，锁释放后不会变成一串互相等待的事务。
+> ⚠️ 全表扫描在临时表完成，**不**锁线上聚合表。随后的短事务才 `LOCK TABLE … ACCESS EXCLUSIVE`、`TRUNCATE`、从临时表拷回，并补写扫描期间新提交的事件。多进程同时触发时用顾问锁串行，后到的进程若发现聚合已补齐会直接跳过。手工 `pnpm db:rebuild-daily` 始终重建一次，且不会再被 `initDB()` 额外排一次。
 
 ---
 
@@ -305,8 +305,11 @@ pnpm db:clean-filtered                 # 实际清理
 pnpm db:rebuild-daily                  # 重建聚合数据
 ```
 
-### 3. rebuild-daily 必须在事务中执行
-`TRUNCATE` + `INSERT` 必须在同一事务内完成并加 `ACCESS EXCLUSIVE` 锁，否则 PM2 并发写入会导致主键冲突。已封装在 `withTransaction` 中，**不要拆分为独立 execute() 调用**。锁表范围含 `event_hourly_perf`、`event_hourly_stats`、`event_hourly_visitors`、`event_daily_perf_urls`、`event_daily_pv_urls`。
+### 3. rebuild-daily 的排他锁只包住换表
+
+全量 `SELECT events` 在 **临时表**里做完（可重复读快照），这段时间上报照常写线上聚合表。换表必须仍在同一事务里 `LOCK TABLE … ACCESS EXCLUSIVE` + `TRUNCATE` + `INSERT`，否则并发 UPSERT 会主键冲突。锁表顺序保持为：`event_daily_stats`、`event_daily_error_types`、`event_daily_visitors`、`event_hourly_perf`、`event_hourly_stats`、`event_hourly_visitors`、`event_daily_perf_urls`、`event_daily_pv_urls`。换表后只按主键补写快照之后新提交的事件，因此排他锁时长跟「扫描期间的增量」走，而不是跟历史明细总量走。
+
+自动补聚合（`initDB`）在顾问锁内复查行数，避免每个进程各做一遍。`db:prune-events` / `db:clean-filtered` / `db:filters` 调用 `initDB({ autoRebuild: false })`，清理时不会顺便抢这把锁。
 
 ### 4. clean-filtered 采用分批处理
 每批读取 1000 条（基于 id 游标分页），避免 895MB 大表全量加载导致 OOM。
@@ -359,9 +362,10 @@ pnpm db:prune-events
 
 `POST /api/report` 在每个 Node 进程内串行（`apps/server/src/db/reportWrite.ts`）：
 
-1. **一个事务**：批量 `INSERT events`，再按主键合并 UPSERT（同一 `app_id + date` / `hour_start` 只写一次）。并发请求在内存队列合并进这个事务，不各自 `BEGIN`。
+1. **一个事务**：批量 `INSERT events`，再按主键合并 UPSERT。同一 `app_id + date` 只写一次；小时性能、小时行为、URL 性能、URL PV 用多行 `INSERT … ON CONFLICT`，缩短这条日聚合行锁的持有时间。并发请求在内存队列合并进这个事务，不各自 `BEGIN`。
 2. **事务提交之后**：有性能样本的日/小时窗口进入 P50 去抖（`STATS_P50_DEBOUNCE_MS`，默认 5000；`0` 表示提交后尽快刷）。先只读 `events` 算 `percentile_cont(0.5)`，再开短事务 `UPDATE` `*_p50`。扫描期间不持有聚合行锁。
 3. 队列过长时拒绝新写入（`REPORT_WRITE_QUEUE_MAX`，默认 20000 条事件），避免重建锁等待期间把进程堆满。单次事务条数见 `REPORT_WRITE_BATCH`（默认 500）。
+4. 看板读聚合表时 `lock_timeout` 默认 2 秒（`STATS_LOCK_TIMEOUT_MS`）。换表期间拿不到锁就返回 503，连接马上释放。事件列表对 `events` 的 `COUNT(*)` 默认 3 秒封顶（`EVENTS_COUNT_TIMEOUT_MS`）。清理任务不再先全表 `COUNT(*)`。
 
 明细和增量 rollup 必须在同一事务。若先提交 `events` 再 rollup，`rebuildDailyStats` 的快照会把这些明细算进全量结果，随后 rollup 再加一次。
 

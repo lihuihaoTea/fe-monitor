@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { query, queryOne } from '../db/index.js';
+import { pgErrorCode, query, queryOne } from '../db/index.js';
 import {
   MAX_PERF_METRIC_MS,
   normalizePageUrl,
@@ -16,6 +16,17 @@ const nOrNull = (v: string | number | null | undefined) => {
 };
 
 const CACHE_TTL_MS = Number(process.env.STATS_CACHE_TTL_MS) || 120_000;
+/** 重建换表时不要让看板查询把连接占到排他锁结束 */
+const STATS_LOCK_TIMEOUT_MS =
+  Number(process.env.STATS_LOCK_TIMEOUT_MS) || 2_000;
+const statsQuery = <T extends Record<string, any>>(
+  sql: string,
+  params: unknown[]
+) => query<T>(sql, params, STATS_LOCK_TIMEOUT_MS);
+const statsQueryOne = <T extends Record<string, any>>(
+  sql: string,
+  params: unknown[]
+) => queryOne<T>(sql, params, STATS_LOCK_TIMEOUT_MS);
 const PERF_URL_TOP_N = Number(process.env.PERF_URL_TOP_N) || 20;
 /** 行为看板：每日访问量最高页数 */
 const PV_TOP_N = Number(process.env.PV_TOP_N) || 20;
@@ -119,7 +130,7 @@ statsRouter.get('/', async (req, res) => {
       urlRows,
       pvUrlRows,
     ] = await Promise.all([
-      queryOne<Record<string, string | number | null>>(
+      statsQueryOne<Record<string, string | number | null>>(
         `SELECT
            COALESCE(SUM(js_errors), 0)::int as js_errors,
            COALESCE(SUM(resource_errors), 0)::int as resource_errors,
@@ -191,7 +202,7 @@ statsRouter.get('/', async (req, res) => {
         dayParams
       ),
 
-      query<{ sub_type: string; count: string | number }>(
+      statsQuery<{ sub_type: string; count: string | number }>(
         `SELECT sub_type, SUM(count)::int as count
          FROM event_daily_error_types
          WHERE app_id = ? AND date >= ?::date AND date <= ?::date
@@ -201,7 +212,7 @@ statsRouter.get('/', async (req, res) => {
         dayParams
       ),
 
-      queryOne<{ count: string | number }>(
+      statsQueryOne<{ count: string | number }>(
         `SELECT COUNT(*)::int as count
          FROM (
            SELECT visitor_id
@@ -212,7 +223,7 @@ statsRouter.get('/', async (req, res) => {
         dayParams
       ),
 
-      query<Record<string, any>>(
+      statsQuery<Record<string, any>>(
         `SELECT
            to_char(s.date, 'YYYY-MM-DD') as date,
            s.js_errors as errors,
@@ -261,7 +272,7 @@ statsRouter.get('/', async (req, res) => {
       ),
 
       // 小时性能：仅查 hourlyDate 当天
-      query<{
+      statsQuery<{
         hour_label: string;
         metric: string;
         avg_value: string | number;
@@ -282,7 +293,7 @@ statsRouter.get('/', async (req, res) => {
       ),
 
       // 小时行为/稳定性：仅查当天；UV 用子查询但范围仅 24h
-      query<Record<string, string | number | null>>(
+      statsQuery<Record<string, string | number | null>>(
         `SELECT
            to_char(h.hour_start, 'YYYY-MM-DD HH24:00') as hour_label,
            h.js_errors as errors,
@@ -314,7 +325,7 @@ statsRouter.get('/', async (req, res) => {
       ),
 
       // URL 写入时已 normalize，读路径不再 regexp
-      query<UrlAggRow>(
+      statsQuery<UrlAggRow>(
         `SELECT metric, url,
            SUM(value_sum)::bigint as value_sum,
            SUM(value_count)::int as value_count,
@@ -326,7 +337,7 @@ statsRouter.get('/', async (req, res) => {
         dayParams
       ),
 
-      query<{
+      statsQuery<{
         date: string;
         url: string;
         pv: string | number;
@@ -618,6 +629,10 @@ statsRouter.get('/', async (req, res) => {
     res.setHeader('X-Stats-Cache', 'MISS');
     res.json(payload);
   } catch (error) {
+    if (pgErrorCode(error) === '55P03') {
+      res.setHeader('Retry-After', '2');
+      return res.status(503).json({ error: '聚合表正在重建，请稍后重试' });
+    }
     console.error('Stats error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }

@@ -1,4 +1,4 @@
-import { clientQuery, query, withTransaction } from './index.js';
+import { clientQuery, pool, query, withTransaction } from './index.js';
 /**
  * 与 SDK 一致：丢弃超长样本（长驻 SPA / Soft Navigation 下 startTime 可达数天，
  * 会把 AVG 拉爆）。可用环境变量 PERF_MAX_METRIC_MS 覆盖（毫秒）。
@@ -557,39 +557,6 @@ function addPerfBucket(bucket, value) {
     bucket.max = Math.max(bucket.max, value);
     return bucket;
 }
-async function upsertHourlyPerf(client, appId, hour, metric, bucket) {
-    await clientQuery(client, `INSERT INTO event_hourly_perf AS h (
-       app_id, hour_start, metric, value_sum, value_count, value_min, value_max, value_p50
-     ) VALUES (?, ?::timestamp, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (app_id, hour_start, metric) DO UPDATE SET
-       value_sum = h.value_sum + EXCLUDED.value_sum,
-       value_count = h.value_count + EXCLUDED.value_count,
-       value_min = CASE WHEN h.value_min IS NULL THEN EXCLUDED.value_min
-         ELSE LEAST(h.value_min, EXCLUDED.value_min) END,
-       value_max = CASE WHEN h.value_max IS NULL THEN EXCLUDED.value_max
-         ELSE GREATEST(h.value_max, EXCLUDED.value_max) END`, [
-        appId,
-        hour,
-        metric,
-        bucket.sum,
-        bucket.count,
-        bucket.min,
-        bucket.max,
-        bucket.count === 1 ? bucket.min : null,
-    ]);
-}
-async function upsertDailyPerfUrl(client, appId, date, metric, url, bucket) {
-    await clientQuery(client, `INSERT INTO event_daily_perf_urls AS u (
-       app_id, date, metric, url, value_sum, value_count, value_min, value_max
-     ) VALUES (?, ?::date, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (app_id, date, metric, url) DO UPDATE SET
-       value_sum = u.value_sum + EXCLUDED.value_sum,
-       value_count = u.value_count + EXCLUDED.value_count,
-       value_min = CASE WHEN u.value_min IS NULL THEN EXCLUDED.value_min
-         ELSE LEAST(u.value_min, EXCLUDED.value_min) END,
-       value_max = CASE WHEN u.value_max IS NULL THEN EXCLUDED.value_max
-         ELSE GREATEST(u.value_max, EXCLUDED.value_max) END`, [appId, date, metric, url, bucket.sum, bucket.count, bucket.min, bucket.max]);
-}
 async function upsertDailyStats(client, appId, date, delta) {
     await clientQuery(client, `INSERT INTO event_daily_stats AS s (
        app_id, date,
@@ -727,44 +694,6 @@ async function upsertDailyStats(client, appId, date, delta) {
         delta.perfOverBudget,
     ]);
 }
-/** 行为 + 稳定性小时聚合（供看板小时趋势，读路径不依赖明细） */
-async function upsertHourlyStats(client, appId, hour, delta) {
-    await clientQuery(client, `INSERT INTO event_hourly_stats AS h (
-       app_id, hour_start,
-       js_errors, resource_errors, api_errors, blank_screens,
-       not_found_404, other_issues, pv, clicks,
-       stay_duration_sum, stay_count
-     ) VALUES (
-       ?, ?::timestamp,
-       ?, ?, ?, ?,
-       ?, ?, ?, ?,
-       ?, ?
-     )
-     ON CONFLICT (app_id, hour_start) DO UPDATE SET
-       js_errors = h.js_errors + EXCLUDED.js_errors,
-       resource_errors = h.resource_errors + EXCLUDED.resource_errors,
-       api_errors = h.api_errors + EXCLUDED.api_errors,
-       blank_screens = h.blank_screens + EXCLUDED.blank_screens,
-       not_found_404 = h.not_found_404 + EXCLUDED.not_found_404,
-       other_issues = h.other_issues + EXCLUDED.other_issues,
-       pv = h.pv + EXCLUDED.pv,
-       clicks = h.clicks + EXCLUDED.clicks,
-       stay_duration_sum = h.stay_duration_sum + EXCLUDED.stay_duration_sum,
-       stay_count = h.stay_count + EXCLUDED.stay_count`, [
-        appId,
-        hour,
-        delta.jsErrors,
-        delta.resourceErrors,
-        delta.apiErrors,
-        delta.blankScreens,
-        delta.notFound404,
-        delta.otherIssues,
-        delta.pv,
-        delta.clicks,
-        delta.stayDurationSum,
-        delta.stayCount,
-    ]);
-}
 async function insertValueRows(client, prefix, suffix, rowSql, rowParams) {
     const chunkSize = 200;
     for (let i = 0; i < rowParams.length; i += chunkSize) {
@@ -892,24 +821,88 @@ export async function applyRollupBatch(client, events) {
     if (visitorRows.length > 0) {
         await insertValueRows(client, `INSERT INTO event_daily_visitors (app_id, date, visitor_id)`, 'ON CONFLICT DO NOTHING', '(?, ?::date, ?)', visitorRows.map((row) => [row.appId, row.date, row.visitorId]));
     }
-    for (const row of sortedBy(hourlyPerf.values(), (item) => `${item.appId}|${item.hour}|${item.metric}`)) {
-        await upsertHourlyPerf(client, row.appId, row.hour, row.metric, row.bucket);
+    const hourlyPerfRows = sortedBy(hourlyPerf.values(), (item) => `${item.appId}|${item.hour}|${item.metric}`);
+    if (hourlyPerfRows.length > 0) {
+        await insertValueRows(client, `INSERT INTO event_hourly_perf AS h (
+         app_id, hour_start, metric, value_sum, value_count, value_min, value_max, value_p50
+       )`, `ON CONFLICT (app_id, hour_start, metric) DO UPDATE SET
+         value_sum = h.value_sum + EXCLUDED.value_sum,
+         value_count = h.value_count + EXCLUDED.value_count,
+         value_min = CASE WHEN h.value_min IS NULL THEN EXCLUDED.value_min
+           ELSE LEAST(h.value_min, EXCLUDED.value_min) END,
+         value_max = CASE WHEN h.value_max IS NULL THEN EXCLUDED.value_max
+           ELSE GREATEST(h.value_max, EXCLUDED.value_max) END`, '(?, ?::timestamp, ?, ?, ?, ?, ?, ?)', hourlyPerfRows.map((row) => [
+            row.appId,
+            row.hour,
+            row.metric,
+            row.bucket.sum,
+            row.bucket.count,
+            row.bucket.min,
+            row.bucket.max,
+            row.bucket.count === 1 ? row.bucket.min : null,
+        ]));
     }
-    for (const row of sortedBy(hourly.values(), (item) => `${item.appId}|${item.hour}`)) {
-        await upsertHourlyStats(client, row.appId, row.hour, row.delta);
+    const hourlyRows = sortedBy(hourly.values(), (item) => `${item.appId}|${item.hour}`);
+    if (hourlyRows.length > 0) {
+        await insertValueRows(client, `INSERT INTO event_hourly_stats AS h (
+         app_id, hour_start,
+         js_errors, resource_errors, api_errors, blank_screens,
+         not_found_404, other_issues, pv, clicks,
+         stay_duration_sum, stay_count
+       )`, `ON CONFLICT (app_id, hour_start) DO UPDATE SET
+         js_errors = h.js_errors + EXCLUDED.js_errors,
+         resource_errors = h.resource_errors + EXCLUDED.resource_errors,
+         api_errors = h.api_errors + EXCLUDED.api_errors,
+         blank_screens = h.blank_screens + EXCLUDED.blank_screens,
+         not_found_404 = h.not_found_404 + EXCLUDED.not_found_404,
+         other_issues = h.other_issues + EXCLUDED.other_issues,
+         pv = h.pv + EXCLUDED.pv,
+         clicks = h.clicks + EXCLUDED.clicks,
+         stay_duration_sum = h.stay_duration_sum + EXCLUDED.stay_duration_sum,
+         stay_count = h.stay_count + EXCLUDED.stay_count`, '(?, ?::timestamp, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', hourlyRows.map((row) => [
+            row.appId,
+            row.hour,
+            row.delta.jsErrors,
+            row.delta.resourceErrors,
+            row.delta.apiErrors,
+            row.delta.blankScreens,
+            row.delta.notFound404,
+            row.delta.otherIssues,
+            row.delta.pv,
+            row.delta.clicks,
+            row.delta.stayDurationSum,
+            row.delta.stayCount,
+        ]));
     }
     const hourVisitorRows = sortedBy(hourlyVisitors.values(), (item) => `${item.appId}|${item.hour}|${item.visitorId}`);
     if (hourVisitorRows.length > 0) {
         await insertValueRows(client, `INSERT INTO event_hourly_visitors (app_id, hour_start, visitor_id)`, 'ON CONFLICT DO NOTHING', '(?, ?::timestamp, ?)', hourVisitorRows.map((row) => [row.appId, row.hour, row.visitorId]));
     }
-    for (const row of sortedBy(dailyPerf.values(), (item) => `${item.appId}|${item.date}|${item.metric}|${item.url}`)) {
-        await upsertDailyPerfUrl(client, row.appId, row.date, row.metric, row.url, row.bucket);
+    const dailyPerfRows = sortedBy(dailyPerf.values(), (item) => `${item.appId}|${item.date}|${item.metric}|${item.url}`);
+    if (dailyPerfRows.length > 0) {
+        await insertValueRows(client, `INSERT INTO event_daily_perf_urls AS u (
+         app_id, date, metric, url, value_sum, value_count, value_min, value_max
+       )`, `ON CONFLICT (app_id, date, metric, url) DO UPDATE SET
+         value_sum = u.value_sum + EXCLUDED.value_sum,
+         value_count = u.value_count + EXCLUDED.value_count,
+         value_min = CASE WHEN u.value_min IS NULL THEN EXCLUDED.value_min
+           ELSE LEAST(u.value_min, EXCLUDED.value_min) END,
+         value_max = CASE WHEN u.value_max IS NULL THEN EXCLUDED.value_max
+           ELSE GREATEST(u.value_max, EXCLUDED.value_max) END`, '(?, ?::date, ?, ?, ?, ?, ?, ?)', dailyPerfRows.map((row) => [
+            row.appId,
+            row.date,
+            row.metric,
+            row.url,
+            row.bucket.sum,
+            row.bucket.count,
+            row.bucket.min,
+            row.bucket.max,
+        ]));
     }
-    for (const row of sortedBy(pvUrls.values(), (item) => `${item.appId}|${item.date}|${item.url}`)) {
-        await clientQuery(client, `INSERT INTO event_daily_pv_urls AS u (app_id, date, url, pv)
-       VALUES (?, ?::date, ?, ?)
-       ON CONFLICT (app_id, date, url) DO UPDATE SET
-         pv = u.pv + EXCLUDED.pv`, [row.appId, row.date, row.url, row.pv]);
+    const pvUrlRows = sortedBy(pvUrls.values(), (item) => `${item.appId}|${item.date}|${item.url}`);
+    if (pvUrlRows.length > 0) {
+        await insertValueRows(client, `INSERT INTO event_daily_pv_urls AS u (app_id, date, url, pv)`, `ON CONFLICT (app_id, date, url) DO UPDATE SET
+         pv = u.pv + EXCLUDED.pv`, '(?, ?::date, ?, ?)', pvUrlRows.map((row) => [row.appId, row.date, row.url, row.pv]));
     }
     return [...p50.values()];
 }
@@ -944,376 +937,472 @@ export function sqlNormalizePageUrl(col = 'url') {
 }
 /** @deprecated 使用 sqlNormalizePageUrl() */
 const SQL_NORMALIZE_PAGE_URL = sqlNormalizePageUrl('url');
-/** 从 events 全量重建日/小时/URL 聚合 */
-export async function rebuildDailyStats() {
-    await withTransaction(async (client) => {
-        await client.query(`
-      LOCK TABLE
-        event_daily_stats,
-        event_daily_error_types,
-        event_daily_visitors,
-        event_hourly_perf,
-        event_hourly_stats,
-        event_hourly_visitors,
-        event_daily_perf_urls,
-        event_daily_pv_urls
-      IN ACCESS EXCLUSIVE MODE
-    `);
-        await client.query(`
-      TRUNCATE
-        event_daily_stats,
-        event_daily_error_types,
-        event_daily_visitors,
-        event_hourly_perf,
-        event_hourly_stats,
-        event_hourly_visitors,
-        event_daily_perf_urls,
-        event_daily_pv_urls
-    `);
-        await clientQuery(client, `
-      INSERT INTO event_daily_stats (
-        app_id, date,
-        js_errors, resource_errors, api_errors, blank_screens,
-        not_found_404, other_issues, pv, clicks,
-        stay_duration_sum, stay_count,
-        fcp_sum, fcp_count, fcp_min, fcp_max,
-        lcp_sum, lcp_count, lcp_min, lcp_max,
-        load_sum, load_count, load_min, load_max,
-        dom_ready_sum, dom_ready_count, dom_ready_min, dom_ready_max,
-        ttfb_sum, ttfb_count, ttfb_min, ttfb_max,
-        spa_lcp_sum, spa_lcp_count, spa_lcp_min, spa_lcp_max,
-        fcp_p50, lcp_p50, load_p50, dom_ready_p50, ttfb_p50, spa_lcp_p50,
-        perf_over_budget
-      )
-      SELECT
-        app_id,
-        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date as date,
-        COUNT(*) FILTER (WHERE type = 'error' AND sub_type IN ('js', 'promise'))::int,
-        COUNT(*) FILTER (WHERE type = 'resource')::int,
-        COUNT(*) FILTER (WHERE type = 'api')::int,
-        COUNT(*) FILTER (WHERE type = 'blank')::int,
-        COUNT(*) FILTER (
-          WHERE type = 'error' AND (
-            sub_type = '404' OR (data->>'message') = '404'
-          )
-        )::int,
-        COUNT(*) FILTER (
-          WHERE type = 'error' AND (
-            sub_type IS NULL OR sub_type NOT IN ('js', 'promise')
-          )
-        )::int,
-        COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'pv')::int,
-        COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
-          THEN (data->>'clickCount')::int ELSE 0 END), 0)::int,
-        COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
-          THEN (data->>'duration')::bigint ELSE 0 END), 0)::bigint,
-        COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'stay'
-          AND (data->>'duration') IS NOT NULL)::int,
-        COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'fcp'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
-          THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
-        COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'fcp'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS})::int,
-        MIN((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'fcp'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
-        MAX((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'fcp'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
-        COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'lcp'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
-          THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
-        COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'lcp'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS})::int,
-        MIN((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'lcp'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
-        MAX((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'lcp'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
-        COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'load'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
-          THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
-        COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'load'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS})::int,
-        MIN((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'load'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
-        MAX((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'load'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
-        COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'load'
-          AND (data->>'domReady')::float > 0 AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS}
-          THEN (data->>'domReady')::bigint ELSE 0 END), 0)::bigint,
-        COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'load'
-          AND (data->>'domReady')::float > 0 AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS})::int,
-        MIN((data->>'domReady')::bigint) FILTER (
-          WHERE type = 'performance' AND sub_type = 'load'
-            AND (data->>'domReady')::float > 0 AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS}
-        ),
-        MAX((data->>'domReady')::bigint) FILTER (
-          WHERE type = 'performance' AND sub_type = 'load'
-            AND (data->>'domReady')::float > 0 AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS}
-        ),
-        COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'load'
-          AND (data->>'ttfb')::float > 0 AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS}
-          THEN (data->>'ttfb')::bigint ELSE 0 END), 0)::bigint,
-        COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'load'
-          AND (data->>'ttfb')::float > 0 AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS})::int,
-        MIN((data->>'ttfb')::bigint) FILTER (
-          WHERE type = 'performance' AND sub_type = 'load'
-            AND (data->>'ttfb')::float > 0 AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS}
-        ),
-        MAX((data->>'ttfb')::bigint) FILTER (
-          WHERE type = 'performance' AND sub_type = 'load'
-            AND (data->>'ttfb')::float > 0 AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS}
-        ),
-        COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'spa_lcp'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
-          THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
-        COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'spa_lcp'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS})::int,
-        MIN((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'spa_lcp'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
-        MAX((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'spa_lcp'
-          AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
-        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float) FILTER (
-          WHERE type = 'performance' AND sub_type = 'fcp'
-            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
-        ))::bigint,
-        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float) FILTER (
-          WHERE type = 'performance' AND sub_type = 'lcp'
-            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
-        ))::bigint,
-        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float) FILTER (
-          WHERE type = 'performance' AND sub_type = 'load'
-            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
-        ))::bigint,
-        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'domReady')::float) FILTER (
-          WHERE type = 'performance' AND sub_type = 'load'
-            AND (data->>'domReady')::float > 0 AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS}
-        ))::bigint,
-        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'ttfb')::float) FILTER (
-          WHERE type = 'performance' AND sub_type = 'load'
-            AND (data->>'ttfb')::float > 0 AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS}
-        ))::bigint,
-        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float) FILTER (
-          WHERE type = 'performance' AND sub_type = 'spa_lcp'
-            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
-        ))::bigint,
-        (
-          COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'over_budget')
-          + COUNT(*) FILTER (
-              WHERE type = 'performance'
-                AND sub_type IN ('fcp', 'lcp', 'load', 'spa_lcp')
-                AND (data->>'value')::float > ${MAX_PERF_METRIC_MS}
+/** 从 events 全量重建。全表扫描写入临时表；ACCESS EXCLUSIVE 只覆盖换表和扫描期间的增量。 */
+const REBUILD_TABLES = [
+    'event_daily_stats',
+    'event_daily_error_types',
+    'event_daily_visitors',
+    'event_hourly_perf',
+    'event_hourly_stats',
+    'event_hourly_visitors',
+    'event_daily_perf_urls',
+    'event_daily_pv_urls',
+];
+const REBUILD_ADVISORY_KEY = 814201;
+async function tableCount(client, table) {
+    const result = await client.query(`SELECT COUNT(*)::int AS count FROM ${table}`);
+    return Number(result.rows[0]?.count) || 0;
+}
+async function autoRebuildNeeded(client) {
+    if ((await tableCount(client, 'events')) === 0)
+        return false;
+    const daily = await tableCount(client, 'event_daily_stats');
+    const hourly = await tableCount(client, 'event_hourly_perf');
+    const pv = await tableCount(client, 'event_daily_pv_urls');
+    return daily === 0 || hourly === 0 || pv === 0;
+}
+async function replayGap(client, watermark) {
+    const targets = [];
+    let cursor = watermark;
+    while (true) {
+        const rows = await clientQuery(client, `SELECT id, type, sub_type, timestamp, app_id, visitor_id, url, data
+       FROM events
+       WHERE id > ?
+       ORDER BY id ASC
+       LIMIT 400`, [cursor]);
+        if (rows.length === 0)
+            break;
+        const next = Number(rows[rows.length - 1]?.id);
+        if (!Number.isFinite(next) || next <= cursor)
+            break;
+        targets.push(...(await applyRollupBatch(client, rows.map((row) => ({
+            type: row.type,
+            subType: row.sub_type,
+            timestamp: Number(row.timestamp),
+            appId: row.app_id,
+            visitorId: row.visitor_id,
+            url: row.url,
+            data: row.data && typeof row.data === 'object' && !Array.isArray(row.data)
+                ? row.data
+                : {},
+        })))));
+        cursor = next;
+    }
+    return targets;
+}
+export async function rebuildDailyStats(options) {
+    const force = options?.force !== false;
+    const client = await pool.connect();
+    let locked = false;
+    try {
+        if (!force && !(await autoRebuildNeeded(client)))
+            return false;
+        await client.query('SELECT pg_advisory_lock($1)', [REBUILD_ADVISORY_KEY]);
+        locked = true;
+        if (!force && !(await autoRebuildNeeded(client))) {
+            console.log('[rebuild] 聚合已由其他进程补齐，跳过');
+            return false;
+        }
+        console.log('[rebuild] 开始在临时表聚合 events（不锁线上聚合表）');
+        await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+        let watermark = 0;
+        try {
+            const wm = await client.query('SELECT COALESCE(MAX(id), 0)::bigint AS max_id FROM events');
+            watermark = Number(wm.rows[0]?.max_id) || 0;
+            for (const table of REBUILD_TABLES) {
+                await client.query(`DROP TABLE IF EXISTS staging_${table}`);
+                await client.query(`CREATE TEMP TABLE staging_${table} (LIKE ${table} INCLUDING DEFAULTS)`);
+            }
+            await client.query(`ALTER TABLE staging_event_daily_visitors
+           ADD PRIMARY KEY (app_id, date, visitor_id)`);
+            const stageInsert = (sql, params = []) => clientQuery(client, sql.replace(/INSERT INTO (event_[a-z0-9_]+)/g, 'INSERT INTO staging_$1'), params);
+            await stageInsert(`
+        INSERT INTO event_daily_stats (
+          app_id, date,
+          js_errors, resource_errors, api_errors, blank_screens,
+          not_found_404, other_issues, pv, clicks,
+          stay_duration_sum, stay_count,
+          fcp_sum, fcp_count, fcp_min, fcp_max,
+          lcp_sum, lcp_count, lcp_min, lcp_max,
+          load_sum, load_count, load_min, load_max,
+          dom_ready_sum, dom_ready_count, dom_ready_min, dom_ready_max,
+          ttfb_sum, ttfb_count, ttfb_min, ttfb_max,
+          spa_lcp_sum, spa_lcp_count, spa_lcp_min, spa_lcp_max,
+          fcp_p50, lcp_p50, load_p50, dom_ready_p50, ttfb_p50, spa_lcp_p50,
+          perf_over_budget
+        )
+        SELECT
+          app_id,
+          to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date as date,
+          COUNT(*) FILTER (WHERE type = 'error' AND sub_type IN ('js', 'promise'))::int,
+          COUNT(*) FILTER (WHERE type = 'resource')::int,
+          COUNT(*) FILTER (WHERE type = 'api')::int,
+          COUNT(*) FILTER (WHERE type = 'blank')::int,
+          COUNT(*) FILTER (
+            WHERE type = 'error' AND (
+              sub_type = '404' OR (data->>'message') = '404'
             )
-        )::int
-      FROM events
-      GROUP BY app_id, to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')
-    `, []);
-        await clientQuery(client, `
-      INSERT INTO event_daily_error_types (app_id, date, sub_type, count)
-      SELECT
-        app_id,
-        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
-        COALESCE(NULLIF(TRIM(sub_type), ''), 'manual'),
-        COUNT(*)::int
-      FROM events
-      WHERE type = 'error'
-      GROUP BY 1, 2, 3
-    `, []);
-        await clientQuery(client, `
-      INSERT INTO event_daily_visitors (app_id, date, visitor_id)
-      SELECT DISTINCT
-        app_id,
-        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
-        visitor_id
-      FROM events
-      WHERE type = 'behavior' AND sub_type = 'pv'
-        AND visitor_id IS NOT NULL AND TRIM(visitor_id) != ''
-      ON CONFLICT DO NOTHING
-    `, []);
-        // 小时聚合：fcp / lcp / load
-        await clientQuery(client, `
-      INSERT INTO event_hourly_perf (
-        app_id, hour_start, metric, value_sum, value_count, value_min, value_max, value_p50
-      )
-      SELECT
-        app_id,
-        date_trunc('hour', to_timestamp(timestamp / 1000.0))::timestamp,
-        sub_type,
-        COALESCE(SUM((data->>'value')::bigint), 0)::bigint,
-        COUNT(*)::int,
-        MIN((data->>'value')::bigint),
-        MAX((data->>'value')::bigint),
-        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float))::bigint
-      FROM events
-      WHERE type = 'performance' AND sub_type IN ('fcp', 'lcp', 'load', 'spa_lcp')
-        AND (data->>'value')::float > 0
-        AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
-      GROUP BY 1, 2, 3
-    `, []);
-        // 小时聚合：dom_ready / ttfb（嵌在 load）
-        await clientQuery(client, `
-      INSERT INTO event_hourly_perf (
-        app_id, hour_start, metric, value_sum, value_count, value_min, value_max, value_p50
-      )
-      SELECT
-        app_id,
-        date_trunc('hour', to_timestamp(timestamp / 1000.0))::timestamp,
-        'dom_ready',
-        COALESCE(SUM((data->>'domReady')::bigint), 0)::bigint,
-        COUNT(*)::int,
-        MIN((data->>'domReady')::bigint),
-        MAX((data->>'domReady')::bigint),
-        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'domReady')::float))::bigint
-      FROM events
-      WHERE type = 'performance' AND sub_type = 'load'
-        AND (data->>'domReady')::float > 0
-        AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS}
-      GROUP BY 1, 2
-    `, []);
-        await clientQuery(client, `
-      INSERT INTO event_hourly_perf (
-        app_id, hour_start, metric, value_sum, value_count, value_min, value_max, value_p50
-      )
-      SELECT
-        app_id,
-        date_trunc('hour', to_timestamp(timestamp / 1000.0))::timestamp,
-        'ttfb',
-        COALESCE(SUM((data->>'ttfb')::bigint), 0)::bigint,
-        COUNT(*)::int,
-        MIN((data->>'ttfb')::bigint),
-        MAX((data->>'ttfb')::bigint),
-        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'ttfb')::float))::bigint
-      FROM events
-      WHERE type = 'performance' AND sub_type = 'load'
-        AND (data->>'ttfb')::float > 0
-        AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS}
-      GROUP BY 1, 2
-    `, []);
-        // URL 日聚合：fcp / lcp / load / spa_lcp
-        await clientQuery(client, `
-      INSERT INTO event_daily_perf_urls (
-        app_id, date, metric, url, value_sum, value_count, value_min, value_max
-      )
-      SELECT
-        app_id,
-        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
-        sub_type,
-        ${SQL_NORMALIZE_PAGE_URL},
-        COALESCE(SUM((data->>'value')::bigint), 0)::bigint,
-        COUNT(*)::int,
-        MIN((data->>'value')::bigint),
-        MAX((data->>'value')::bigint)
-      FROM events
-      WHERE type = 'performance' AND sub_type IN ('fcp', 'lcp', 'load', 'spa_lcp')
-        AND (data->>'value')::float > 0
-        AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
-      GROUP BY 1, 2, 3, 4
-    `, []);
-        await clientQuery(client, `
-      INSERT INTO event_daily_perf_urls (
-        app_id, date, metric, url, value_sum, value_count, value_min, value_max
-      )
-      SELECT
-        app_id,
-        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
-        'dom_ready',
-        ${SQL_NORMALIZE_PAGE_URL},
-        COALESCE(SUM((data->>'domReady')::bigint), 0)::bigint,
-        COUNT(*)::int,
-        MIN((data->>'domReady')::bigint),
-        MAX((data->>'domReady')::bigint)
-      FROM events
-      WHERE type = 'performance' AND sub_type = 'load'
-        AND (data->>'domReady')::float > 0
-        AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS}
-      GROUP BY 1, 2, 4
-    `, []);
-        await clientQuery(client, `
-      INSERT INTO event_daily_perf_urls (
-        app_id, date, metric, url, value_sum, value_count, value_min, value_max
-      )
-      SELECT
-        app_id,
-        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
-        'ttfb',
-        ${SQL_NORMALIZE_PAGE_URL},
-        COALESCE(SUM((data->>'ttfb')::bigint), 0)::bigint,
-        COUNT(*)::int,
-        MIN((data->>'ttfb')::bigint),
-        MAX((data->>'ttfb')::bigint)
-      FROM events
-      WHERE type = 'performance' AND sub_type = 'load'
-        AND (data->>'ttfb')::float > 0
-        AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS}
-      GROUP BY 1, 2, 4
-    `, []);
-        // 行为：按 URL 日 PV
-        await clientQuery(client, `
-      INSERT INTO event_daily_pv_urls (app_id, date, url, pv)
-      SELECT
-        app_id,
-        to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
-        ${SQL_NORMALIZE_PAGE_URL},
-        COUNT(*)::int
-      FROM events
-      WHERE type = 'behavior' AND sub_type = 'pv'
-      GROUP BY 1, 2, 3
-    `, []);
-        // 行为 + 稳定性：按小时聚合
-        await clientQuery(client, `
-      INSERT INTO event_hourly_stats (
-        app_id, hour_start,
-        js_errors, resource_errors, api_errors, blank_screens,
-        not_found_404, other_issues, pv, clicks,
-        stay_duration_sum, stay_count
-      )
-      SELECT
-        app_id,
-        date_trunc('hour', to_timestamp(timestamp / 1000.0))::timestamp,
-        COUNT(*) FILTER (WHERE type = 'error' AND sub_type IN ('js', 'promise'))::int,
-        COUNT(*) FILTER (WHERE type = 'resource')::int,
-        COUNT(*) FILTER (WHERE type = 'api')::int,
-        COUNT(*) FILTER (WHERE type = 'blank')::int,
-        COUNT(*) FILTER (
-          WHERE type = 'error' AND (
-            sub_type = '404' OR (data->>'message') = '404'
-          )
-        )::int,
-        COUNT(*) FILTER (
-          WHERE type = 'error' AND (
-            sub_type IS NULL OR sub_type NOT IN ('js', 'promise')
-          )
-        )::int,
-        COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'pv')::int,
-        COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
-          THEN (data->>'clickCount')::int ELSE 0 END), 0)::int,
-        COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
-          THEN (data->>'duration')::bigint ELSE 0 END), 0)::bigint,
-        COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'stay'
-          AND (data->>'duration') IS NOT NULL)::int
-      FROM events
-      GROUP BY 1, 2
-      HAVING
-        COUNT(*) FILTER (WHERE type = 'error' AND sub_type IN ('js', 'promise')) > 0
-        OR COUNT(*) FILTER (WHERE type = 'resource') > 0
-        OR COUNT(*) FILTER (WHERE type = 'api') > 0
-        OR COUNT(*) FILTER (WHERE type = 'blank') > 0
-        OR COUNT(*) FILTER (
-          WHERE type = 'error' AND (
-            sub_type IS NULL OR sub_type NOT IN ('js', 'promise')
-          )
-        ) > 0
-        OR COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'pv') > 0
-        OR COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'stay') > 0
-    `, []);
-        await clientQuery(client, `
-      INSERT INTO event_hourly_visitors (app_id, hour_start, visitor_id)
-      SELECT DISTINCT
-        app_id,
-        date_trunc('hour', to_timestamp(timestamp / 1000.0))::timestamp,
-        visitor_id
-      FROM events
-      WHERE type = 'behavior' AND sub_type = 'pv'
-        AND visitor_id IS NOT NULL AND TRIM(visitor_id) <> ''
-    `, []);
-    });
+          )::int,
+          COUNT(*) FILTER (
+            WHERE type = 'error' AND (
+              sub_type IS NULL OR sub_type NOT IN ('js', 'promise')
+            )
+          )::int,
+          COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'pv')::int,
+          COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
+            THEN (data->>'clickCount')::int ELSE 0 END), 0)::int,
+          COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
+            THEN (data->>'duration')::bigint ELSE 0 END), 0)::bigint,
+          COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'stay'
+            AND (data->>'duration') IS NOT NULL)::int,
+          COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'fcp'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
+            THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
+          COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'fcp'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS})::int,
+          MIN((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'fcp'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
+          MAX((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'fcp'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
+          COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'lcp'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
+            THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
+          COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'lcp'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS})::int,
+          MIN((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'lcp'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
+          MAX((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'lcp'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
+          COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'load'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
+            THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
+          COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'load'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS})::int,
+          MIN((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'load'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
+          MAX((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'load'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
+          COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'load'
+            AND (data->>'domReady')::float > 0 AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS}
+            THEN (data->>'domReady')::bigint ELSE 0 END), 0)::bigint,
+          COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'load'
+            AND (data->>'domReady')::float > 0 AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS})::int,
+          MIN((data->>'domReady')::bigint) FILTER (
+            WHERE type = 'performance' AND sub_type = 'load'
+              AND (data->>'domReady')::float > 0 AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS}
+          ),
+          MAX((data->>'domReady')::bigint) FILTER (
+            WHERE type = 'performance' AND sub_type = 'load'
+              AND (data->>'domReady')::float > 0 AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS}
+          ),
+          COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'load'
+            AND (data->>'ttfb')::float > 0 AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS}
+            THEN (data->>'ttfb')::bigint ELSE 0 END), 0)::bigint,
+          COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'load'
+            AND (data->>'ttfb')::float > 0 AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS})::int,
+          MIN((data->>'ttfb')::bigint) FILTER (
+            WHERE type = 'performance' AND sub_type = 'load'
+              AND (data->>'ttfb')::float > 0 AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS}
+          ),
+          MAX((data->>'ttfb')::bigint) FILTER (
+            WHERE type = 'performance' AND sub_type = 'load'
+              AND (data->>'ttfb')::float > 0 AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS}
+          ),
+          COALESCE(SUM(CASE WHEN type = 'performance' AND sub_type = 'spa_lcp'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
+            THEN (data->>'value')::bigint ELSE 0 END), 0)::bigint,
+          COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'spa_lcp'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS})::int,
+          MIN((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'spa_lcp'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
+          MAX((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'spa_lcp'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
+          ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float) FILTER (
+            WHERE type = 'performance' AND sub_type = 'fcp'
+              AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
+          ))::bigint,
+          ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float) FILTER (
+            WHERE type = 'performance' AND sub_type = 'lcp'
+              AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
+          ))::bigint,
+          ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float) FILTER (
+            WHERE type = 'performance' AND sub_type = 'load'
+              AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
+          ))::bigint,
+          ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'domReady')::float) FILTER (
+            WHERE type = 'performance' AND sub_type = 'load'
+              AND (data->>'domReady')::float > 0 AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS}
+          ))::bigint,
+          ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'ttfb')::float) FILTER (
+            WHERE type = 'performance' AND sub_type = 'load'
+              AND (data->>'ttfb')::float > 0 AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS}
+          ))::bigint,
+          ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float) FILTER (
+            WHERE type = 'performance' AND sub_type = 'spa_lcp'
+              AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
+          ))::bigint,
+          (
+            COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'over_budget')
+            + COUNT(*) FILTER (
+                WHERE type = 'performance'
+                  AND sub_type IN ('fcp', 'lcp', 'load', 'spa_lcp')
+                  AND (data->>'value')::float > ${MAX_PERF_METRIC_MS}
+              )
+          )::int
+        FROM events
+        GROUP BY app_id, to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')
+      `, []);
+            await stageInsert(`
+        INSERT INTO event_daily_error_types (app_id, date, sub_type, count)
+        SELECT
+          app_id,
+          to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
+          COALESCE(NULLIF(TRIM(sub_type), ''), 'manual'),
+          COUNT(*)::int
+        FROM events
+        WHERE type = 'error'
+        GROUP BY 1, 2, 3
+      `, []);
+            await stageInsert(`
+        INSERT INTO event_daily_visitors (app_id, date, visitor_id)
+        SELECT DISTINCT
+          app_id,
+          to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
+          visitor_id
+        FROM events
+        WHERE type = 'behavior' AND sub_type = 'pv'
+          AND visitor_id IS NOT NULL AND TRIM(visitor_id) != ''
+        ON CONFLICT DO NOTHING
+      `, []);
+            // 小时聚合：fcp / lcp / load
+            await stageInsert(`
+        INSERT INTO event_hourly_perf (
+          app_id, hour_start, metric, value_sum, value_count, value_min, value_max, value_p50
+        )
+        SELECT
+          app_id,
+          date_trunc('hour', to_timestamp(timestamp / 1000.0))::timestamp,
+          sub_type,
+          COALESCE(SUM((data->>'value')::bigint), 0)::bigint,
+          COUNT(*)::int,
+          MIN((data->>'value')::bigint),
+          MAX((data->>'value')::bigint),
+          ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float))::bigint
+        FROM events
+        WHERE type = 'performance' AND sub_type IN ('fcp', 'lcp', 'load', 'spa_lcp')
+          AND (data->>'value')::float > 0
+          AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
+        GROUP BY 1, 2, 3
+      `, []);
+            // 小时聚合：dom_ready / ttfb（嵌在 load）
+            await stageInsert(`
+        INSERT INTO event_hourly_perf (
+          app_id, hour_start, metric, value_sum, value_count, value_min, value_max, value_p50
+        )
+        SELECT
+          app_id,
+          date_trunc('hour', to_timestamp(timestamp / 1000.0))::timestamp,
+          'dom_ready',
+          COALESCE(SUM((data->>'domReady')::bigint), 0)::bigint,
+          COUNT(*)::int,
+          MIN((data->>'domReady')::bigint),
+          MAX((data->>'domReady')::bigint),
+          ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'domReady')::float))::bigint
+        FROM events
+        WHERE type = 'performance' AND sub_type = 'load'
+          AND (data->>'domReady')::float > 0
+          AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS}
+        GROUP BY 1, 2
+      `, []);
+            await stageInsert(`
+        INSERT INTO event_hourly_perf (
+          app_id, hour_start, metric, value_sum, value_count, value_min, value_max, value_p50
+        )
+        SELECT
+          app_id,
+          date_trunc('hour', to_timestamp(timestamp / 1000.0))::timestamp,
+          'ttfb',
+          COALESCE(SUM((data->>'ttfb')::bigint), 0)::bigint,
+          COUNT(*)::int,
+          MIN((data->>'ttfb')::bigint),
+          MAX((data->>'ttfb')::bigint),
+          ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'ttfb')::float))::bigint
+        FROM events
+        WHERE type = 'performance' AND sub_type = 'load'
+          AND (data->>'ttfb')::float > 0
+          AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS}
+        GROUP BY 1, 2
+      `, []);
+            // URL 日聚合：fcp / lcp / load / spa_lcp
+            await stageInsert(`
+        INSERT INTO event_daily_perf_urls (
+          app_id, date, metric, url, value_sum, value_count, value_min, value_max
+        )
+        SELECT
+          app_id,
+          to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
+          sub_type,
+          ${SQL_NORMALIZE_PAGE_URL},
+          COALESCE(SUM((data->>'value')::bigint), 0)::bigint,
+          COUNT(*)::int,
+          MIN((data->>'value')::bigint),
+          MAX((data->>'value')::bigint)
+        FROM events
+        WHERE type = 'performance' AND sub_type IN ('fcp', 'lcp', 'load', 'spa_lcp')
+          AND (data->>'value')::float > 0
+          AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
+        GROUP BY 1, 2, 3, 4
+      `, []);
+            await stageInsert(`
+        INSERT INTO event_daily_perf_urls (
+          app_id, date, metric, url, value_sum, value_count, value_min, value_max
+        )
+        SELECT
+          app_id,
+          to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
+          'dom_ready',
+          ${SQL_NORMALIZE_PAGE_URL},
+          COALESCE(SUM((data->>'domReady')::bigint), 0)::bigint,
+          COUNT(*)::int,
+          MIN((data->>'domReady')::bigint),
+          MAX((data->>'domReady')::bigint)
+        FROM events
+        WHERE type = 'performance' AND sub_type = 'load'
+          AND (data->>'domReady')::float > 0
+          AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS}
+        GROUP BY 1, 2, 4
+      `, []);
+            await stageInsert(`
+        INSERT INTO event_daily_perf_urls (
+          app_id, date, metric, url, value_sum, value_count, value_min, value_max
+        )
+        SELECT
+          app_id,
+          to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
+          'ttfb',
+          ${SQL_NORMALIZE_PAGE_URL},
+          COALESCE(SUM((data->>'ttfb')::bigint), 0)::bigint,
+          COUNT(*)::int,
+          MIN((data->>'ttfb')::bigint),
+          MAX((data->>'ttfb')::bigint)
+        FROM events
+        WHERE type = 'performance' AND sub_type = 'load'
+          AND (data->>'ttfb')::float > 0
+          AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS}
+        GROUP BY 1, 2, 4
+      `, []);
+            // 行为：按 URL 日 PV
+            await stageInsert(`
+        INSERT INTO event_daily_pv_urls (app_id, date, url, pv)
+        SELECT
+          app_id,
+          to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD')::date,
+          ${SQL_NORMALIZE_PAGE_URL},
+          COUNT(*)::int
+        FROM events
+        WHERE type = 'behavior' AND sub_type = 'pv'
+        GROUP BY 1, 2, 3
+      `, []);
+            // 行为 + 稳定性：按小时聚合
+            await stageInsert(`
+        INSERT INTO event_hourly_stats (
+          app_id, hour_start,
+          js_errors, resource_errors, api_errors, blank_screens,
+          not_found_404, other_issues, pv, clicks,
+          stay_duration_sum, stay_count
+        )
+        SELECT
+          app_id,
+          date_trunc('hour', to_timestamp(timestamp / 1000.0))::timestamp,
+          COUNT(*) FILTER (WHERE type = 'error' AND sub_type IN ('js', 'promise'))::int,
+          COUNT(*) FILTER (WHERE type = 'resource')::int,
+          COUNT(*) FILTER (WHERE type = 'api')::int,
+          COUNT(*) FILTER (WHERE type = 'blank')::int,
+          COUNT(*) FILTER (
+            WHERE type = 'error' AND (
+              sub_type = '404' OR (data->>'message') = '404'
+            )
+          )::int,
+          COUNT(*) FILTER (
+            WHERE type = 'error' AND (
+              sub_type IS NULL OR sub_type NOT IN ('js', 'promise')
+            )
+          )::int,
+          COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'pv')::int,
+          COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
+            THEN (data->>'clickCount')::int ELSE 0 END), 0)::int,
+          COALESCE(SUM(CASE WHEN type = 'behavior' AND sub_type = 'stay'
+            THEN (data->>'duration')::bigint ELSE 0 END), 0)::bigint,
+          COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'stay'
+            AND (data->>'duration') IS NOT NULL)::int
+        FROM events
+        GROUP BY 1, 2
+        HAVING
+          COUNT(*) FILTER (WHERE type = 'error' AND sub_type IN ('js', 'promise')) > 0
+          OR COUNT(*) FILTER (WHERE type = 'resource') > 0
+          OR COUNT(*) FILTER (WHERE type = 'api') > 0
+          OR COUNT(*) FILTER (WHERE type = 'blank') > 0
+          OR COUNT(*) FILTER (
+            WHERE type = 'error' AND (
+              sub_type IS NULL OR sub_type NOT IN ('js', 'promise')
+            )
+          ) > 0
+          OR COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'pv') > 0
+          OR COUNT(*) FILTER (WHERE type = 'behavior' AND sub_type = 'stay') > 0
+      `, []);
+            await stageInsert(`
+        INSERT INTO event_hourly_visitors (app_id, hour_start, visitor_id)
+        SELECT DISTINCT
+          app_id,
+          date_trunc('hour', to_timestamp(timestamp / 1000.0))::timestamp,
+          visitor_id
+        FROM events
+        WHERE type = 'behavior' AND sub_type = 'pv'
+          AND visitor_id IS NOT NULL AND TRIM(visitor_id) <> ''
+      `, []);
+            await client.query('COMMIT');
+        }
+        catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        }
+        console.log(`[rebuild] 临时表完成，换入线上表并补写 id>${watermark} 之后的增量`);
+        await client.query('BEGIN');
+        try {
+            await client.query(`LOCK TABLE ${REBUILD_TABLES.join(', ')} IN ACCESS EXCLUSIVE MODE`);
+            await client.query(`TRUNCATE ${REBUILD_TABLES.join(', ')}`);
+            for (const table of REBUILD_TABLES) {
+                await client.query(`INSERT INTO ${table} SELECT * FROM staging_${table}`);
+            }
+            const targets = await replayGap(client, watermark);
+            await client.query('COMMIT');
+            if (targets.length > 0)
+                schedulePerfP50Refresh(targets);
+            return true;
+        }
+        catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        }
+    }
+    finally {
+        if (locked) {
+            try {
+                await client.query('SELECT pg_advisory_unlock($1)', [REBUILD_ADVISORY_KEY]);
+            }
+            catch {
+                // 连接断开时会话锁随连接释放
+            }
+        }
+        try {
+            for (const table of REBUILD_TABLES) {
+                await client.query(`DROP TABLE IF EXISTS staging_${table}`);
+            }
+        }
+        catch {
+            // 临时表会随会话结束
+        }
+        client.release();
+    }
 }
 //# sourceMappingURL=dailyStats.js.map

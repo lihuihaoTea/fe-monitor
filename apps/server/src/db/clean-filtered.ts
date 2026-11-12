@@ -31,7 +31,7 @@ function parseData(raw: unknown): any {
 }
 
 async function main() {
-  await initDB();
+  await initDB({ autoRebuild: false });
   console.log(`模式: ${dryRun ? 'dry-run（只统计不删除）' : '删除'}`);
 
   const rules = await loadEnabledFilters();

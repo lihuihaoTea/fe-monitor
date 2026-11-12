@@ -30,11 +30,10 @@ export async function pruneExpiredEvents(options) {
         }
         const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
         const placeholders = types.map(() => '?').join(', ');
-        const totalRow = await queryOne(`SELECT COUNT(*)::int as count FROM events
-       WHERE type IN (${placeholders}) AND created_at < ?`, [...types, cutoff]);
-        const batchTotal = Number(totalRow?.count) || 0;
-        if (batchTotal === 0 || dryRun) {
-            return { deleted: 0, total: batchTotal, cutoff };
+        if (dryRun) {
+            const totalRow = await queryOne(`SELECT COUNT(*)::int as count FROM events
+         WHERE type IN (${placeholders}) AND created_at < ?`, [...types, cutoff]);
+            return { deleted: 0, total: Number(totalRow?.count) || 0, cutoff };
         }
         let batchDeleted = 0;
         while (true) {
@@ -52,7 +51,7 @@ export async function pruneExpiredEvents(options) {
             if (result < BATCH_SIZE)
                 break;
         }
-        return { deleted: batchDeleted, total: batchTotal, cutoff };
+        return { deleted: batchDeleted, total: batchDeleted, cutoff };
     };
     const agg = await runBatch(AGG_BACKED_TYPES, ttlDays);
     deleted += agg.deleted;
@@ -68,7 +67,7 @@ async function main() {
     const dryRun = process.argv.includes('--dry-run');
     const ttlDays = Number(process.env.EVENTS_TTL_DAYS ?? 7);
     const detailTtlDays = Number(process.env.EVENTS_DETAIL_TTL_DAYS ?? 30);
-    await initDB();
+    await initDB({ autoRebuild: false });
     console.log(`模式: ${dryRun ? 'dry-run' : '删除'}；` +
         `behavior/performance 保留 ${ttlDays} 天；` +
         `error/api/resource/blank 保留 ${detailTtlDays} 天`);

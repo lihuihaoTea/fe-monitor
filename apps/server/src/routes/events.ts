@@ -1,5 +1,10 @@
 import { Router } from 'express';
-import { query, queryOne } from '../db/index.js';
+import {
+  pgErrorCode,
+  query,
+  queryOne,
+  queryOneWithStatementTimeout,
+} from '../db/index.js';
 import {
   EVENT_CATEGORIES,
   PRESET_SUB_TYPES,
@@ -234,13 +239,30 @@ eventsRouter.get('/latest', async (req, res) => {
     const canUseAggTotal =
       !messageKeyword && !urlKeyword && !subTypeValue && category !== 'performance';
 
-    const [total, rows] = await Promise.all([
-      canUseAggTotal
-        ? totalFromDailyStats(category, appId, start, end)
-        : queryOne<{ total: string | number }>(
-            `SELECT COUNT(*)::int as total FROM events WHERE ${baseConditions.join(' AND ')}`,
-            baseParams
-          ).then((row) => Number(row?.total) || 0),
+    const countPromise: Promise<
+      { total: number; totalSource: string }
+    > = canUseAggTotal
+      ? totalFromDailyStats(category, appId, start, end).then((value) =>
+          value == null
+            ? { total: 0, totalSource: 'unavailable' }
+            : { total: value, totalSource: 'daily_stats' }
+        )
+      : queryOneWithStatementTimeout<{ total: string | number }>(
+          `SELECT COUNT(*)::int as total FROM events WHERE ${baseConditions.join(' AND ')}`,
+          baseParams,
+          Number(process.env.EVENTS_COUNT_TIMEOUT_MS) || 3_000
+        )
+          .then((row) => ({
+            total: Number(row?.total) || 0,
+            totalSource: 'events',
+          }))
+          .catch((err: unknown) => {
+            if (pgErrorCode(err) !== '57014') throw err;
+            return { total: -1, totalSource: 'timeout' };
+          });
+
+    const [counted, rows] = await Promise.all([
+      countPromise,
       query<{
         id: number;
         type: string;
@@ -250,6 +272,11 @@ eventsRouter.get('/latest', async (req, res) => {
         data: unknown;
       }>(listSql, listParams),
     ]);
+
+    const total =
+      counted.totalSource === 'timeout'
+        ? offset + rows.length + (rows.length >= limit ? 1 : 0)
+        : counted.total;
 
     const last = rows[rows.length - 1];
     const nextCursor =
@@ -267,7 +294,7 @@ eventsRouter.get('/latest', async (req, res) => {
       total: total ?? 0,
       nextCursor,
       paginationMode: useKeyset ? 'keyset' : 'offset',
-      totalSource: canUseAggTotal ? 'daily_stats' : 'events',
+      totalSource: counted.totalSource,
       filters: {
         subType: subTypeValue || null,
         messageKeyword: messageKeyword || null,

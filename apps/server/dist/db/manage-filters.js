@@ -102,7 +102,7 @@ async function printRows() {
     })));
 }
 async function main() {
-    await initDB();
+    await initDB({ autoRebuild: false });
     const args = process.argv.slice(2).filter((a) => a !== '--');
     const cmd = args[0];
     try {

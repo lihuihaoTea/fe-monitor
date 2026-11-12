@@ -28,7 +28,7 @@ function parseData(raw) {
     return {};
 }
 async function main() {
-    await initDB();
+    await initDB({ autoRebuild: false });
     console.log(`模式: ${dryRun ? 'dry-run（只统计不删除）' : '删除'}`);
     const rules = await loadEnabledFilters();
     console.log('当前启用的筛除规则:');

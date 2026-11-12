@@ -23,12 +23,55 @@ export function pgPlaceholders(sql) {
     let index = 0;
     return sql.replace(/\?/g, () => `$${++index}`);
 }
-export async function query(sql, params = []) {
-    const result = await pool.query(pgPlaceholders(sql), params);
-    return result.rows;
+export function pgErrorCode(err) {
+    if (!err || typeof err !== 'object' || !('code' in err))
+        return undefined;
+    const code = err.code;
+    return typeof code === 'string' ? code : undefined;
 }
-export async function queryOne(sql, params = []) {
-    const rows = await query(sql, params);
+async function withClientTimeout(kind, timeoutMs, fn) {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query(`SET LOCAL ${kind} = ${Math.max(1, Math.floor(timeoutMs))}`);
+        const value = await fn(client);
+        await client.query('COMMIT');
+        return value;
+    }
+    catch (err) {
+        try {
+            await client.query('ROLLBACK');
+        }
+        catch {
+            // 超时后连接可能已中止
+        }
+        throw err;
+    }
+    finally {
+        client.release();
+    }
+}
+export async function query(sql, params = [], lockTimeoutMs) {
+    const run = async (client) => {
+        const result = await client.query(pgPlaceholders(sql), params);
+        return result.rows;
+    };
+    if (!lockTimeoutMs) {
+        const result = await pool.query(pgPlaceholders(sql), params);
+        return result.rows;
+    }
+    return withClientTimeout('lock_timeout', lockTimeoutMs, run);
+}
+export async function queryOne(sql, params = [], lockTimeoutMs) {
+    const rows = await query(sql, params, lockTimeoutMs);
+    return rows[0] ?? null;
+}
+/** 给会扫大表的只读语句封顶，避免一条 COUNT 长时间占着连接 */
+export async function queryOneWithStatementTimeout(sql, params = [], statementTimeoutMs = 3000) {
+    const rows = await withClientTimeout('statement_timeout', statementTimeoutMs, async (client) => {
+        const result = await client.query(pgPlaceholders(sql), params);
+        return result.rows;
+    });
     return rows[0] ?? null;
 }
 export async function execute(sql, params = []) {
@@ -56,7 +99,7 @@ export async function clientQuery(client, sql, params = []) {
     const result = await client.query(pgPlaceholders(sql), params);
     return result.rows;
 }
-export async function initDB() {
+export async function initDB(options) {
     await pool.query(`
     CREATE TABLE IF NOT EXISTS events (
       id SERIAL PRIMARY KEY,
@@ -267,23 +310,15 @@ export async function initDB() {
   `);
     await seedDefaultFilters();
     console.log('Database initialized successfully');
-    // 聚合重建改为后台异步执行，避免阻塞服务启动和健康检查
+    if (options?.autoRebuild === false)
+        return;
+    // 缺聚合时后台补一次。force:false 会在拿到顾问锁后复查，避免多进程各重建一遍。
     setImmediate(async () => {
         try {
-            const dailyCount = await queryOne(`SELECT COUNT(*)::int as count FROM event_daily_stats`);
-            const hourlyCount = await queryOne(`SELECT COUNT(*)::int as count FROM event_hourly_perf`);
-            const pvUrlCount = await queryOne(`SELECT COUNT(*)::int as count FROM event_daily_pv_urls`);
-            const eventCount = await queryOne(`SELECT COUNT(*)::int as count FROM events`);
-            const needRebuild = Number(eventCount?.count) > 0 &&
-                (Number(dailyCount?.count) === 0 ||
-                    Number(hourlyCount?.count) === 0 ||
-                    Number(pvUrlCount?.count) === 0);
-            if (needRebuild) {
-                console.log('[bg] 检测到历史 events 或缺聚合，后台开始重建…');
-                const { rebuildDailyStats } = await import('./dailyStats.js');
-                await rebuildDailyStats();
+            const { rebuildDailyStats } = await import('./dailyStats.js');
+            const ran = await rebuildDailyStats({ force: false });
+            if (ran)
                 console.log('[bg] 聚合重建完成');
-            }
         }
         catch (err) {
             console.error('[bg] 聚合重建失败:', err);

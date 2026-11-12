@@ -8,7 +8,7 @@ import { initDB, closeDB, queryOne } from './index.js';
 import { rebuildDailyStats } from './dailyStats.js';
 
 async function main() {
-  await initDB();
+  await initDB({ autoRebuild: false });
   console.log('开始重建日聚合…');
   const t0 = Date.now();
   await rebuildDailyStats();

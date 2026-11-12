@@ -32,19 +32,79 @@ export function pgPlaceholders(sql: string): string {
   return sql.replace(/\?/g, () => `$${++index}`);
 }
 
+export function pgErrorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== 'object' || !('code' in err)) return undefined;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+async function withClientTimeout<T>(
+  kind: 'lock_timeout' | 'statement_timeout',
+  timeoutMs: number,
+  fn: (client: PoolClient) => Promise<T>
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `SET LOCAL ${kind} = ${Math.max(1, Math.floor(timeoutMs))}`
+    );
+    const value = await fn(client);
+    await client.query('COMMIT');
+    return value;
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // 超时后连接可能已中止
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export async function query<T extends QueryResultRow = QueryResultRow>(
   sql: string,
-  params: unknown[] = []
+  params: unknown[] = [],
+  lockTimeoutMs?: number
 ): Promise<T[]> {
-  const result = await pool.query<T>(pgPlaceholders(sql), params);
-  return result.rows;
+  const run = async (client: PoolClient) => {
+    const result = await client.query<T>(pgPlaceholders(sql), params);
+    return result.rows;
+  };
+  if (!lockTimeoutMs) {
+    const result = await pool.query<T>(pgPlaceholders(sql), params);
+    return result.rows;
+  }
+  return withClientTimeout('lock_timeout', lockTimeoutMs, run);
 }
 
 export async function queryOne<T extends QueryResultRow = QueryResultRow>(
   sql: string,
-  params: unknown[] = []
+  params: unknown[] = [],
+  lockTimeoutMs?: number
 ): Promise<T | null> {
-  const rows = await query<T>(sql, params);
+  const rows = await query<T>(sql, params, lockTimeoutMs);
+  return rows[0] ?? null;
+}
+
+/** 给会扫大表的只读语句封顶，避免一条 COUNT 长时间占着连接 */
+export async function queryOneWithStatementTimeout<
+  T extends QueryResultRow = QueryResultRow,
+>(
+  sql: string,
+  params: unknown[] = [],
+  statementTimeoutMs = 3_000
+): Promise<T | null> {
+  const rows = await withClientTimeout(
+    'statement_timeout',
+    statementTimeoutMs,
+    async (client) => {
+      const result = await client.query<T>(pgPlaceholders(sql), params);
+      return result.rows;
+    }
+  );
   return rows[0] ?? null;
 }
 
@@ -83,7 +143,7 @@ export async function clientQuery<T extends QueryResultRow = QueryResultRow>(
   return result.rows;
 }
 
-export async function initDB() {
+export async function initDB(options?: { autoRebuild?: boolean }) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS events (
       id SERIAL PRIMARY KEY,
@@ -297,32 +357,14 @@ export async function initDB() {
 
   console.log('Database initialized successfully');
 
-  // 聚合重建改为后台异步执行，避免阻塞服务启动和健康检查
+  if (options?.autoRebuild === false) return;
+
+  // 缺聚合时后台补一次。force:false 会在拿到顾问锁后复查，避免多进程各重建一遍。
   setImmediate(async () => {
     try {
-      const dailyCount = await queryOne<{ count: string | number }>(
-        `SELECT COUNT(*)::int as count FROM event_daily_stats`
-      );
-      const hourlyCount = await queryOne<{ count: string | number }>(
-        `SELECT COUNT(*)::int as count FROM event_hourly_perf`
-      );
-      const pvUrlCount = await queryOne<{ count: string | number }>(
-        `SELECT COUNT(*)::int as count FROM event_daily_pv_urls`
-      );
-      const eventCount = await queryOne<{ count: string | number }>(
-        `SELECT COUNT(*)::int as count FROM events`
-      );
-      const needRebuild =
-        Number(eventCount?.count) > 0 &&
-        (Number(dailyCount?.count) === 0 ||
-          Number(hourlyCount?.count) === 0 ||
-          Number(pvUrlCount?.count) === 0);
-      if (needRebuild) {
-        console.log('[bg] 检测到历史 events 或缺聚合，后台开始重建…');
-        const { rebuildDailyStats } = await import('./dailyStats.js');
-        await rebuildDailyStats();
-        console.log('[bg] 聚合重建完成');
-      }
+      const { rebuildDailyStats } = await import('./dailyStats.js');
+      const ran = await rebuildDailyStats({ force: false });
+      if (ran) console.log('[bg] 聚合重建完成');
     } catch (err) {
       console.error('[bg] 聚合重建失败:', err);
     }

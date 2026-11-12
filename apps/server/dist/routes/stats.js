@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { query, queryOne } from '../db/index.js';
+import { pgErrorCode, query, queryOne } from '../db/index.js';
 import { MAX_PERF_METRIC_MS, normalizePageUrl, } from '../db/dailyStats.js';
 import { parseRangeBound } from './eventQuery.js';
 export const statsRouter = Router();
@@ -11,6 +11,10 @@ const nOrNull = (v) => {
     return Number.isFinite(num) ? num : null;
 };
 const CACHE_TTL_MS = Number(process.env.STATS_CACHE_TTL_MS) || 120000;
+/** 重建换表时不要让看板查询把连接占到排他锁结束 */
+const STATS_LOCK_TIMEOUT_MS = Number(process.env.STATS_LOCK_TIMEOUT_MS) || 2000;
+const statsQuery = (sql, params) => query(sql, params, STATS_LOCK_TIMEOUT_MS);
+const statsQueryOne = (sql, params) => queryOne(sql, params, STATS_LOCK_TIMEOUT_MS);
 const PERF_URL_TOP_N = Number(process.env.PERF_URL_TOP_N) || 20;
 /** 行为看板：每日访问量最高页数 */
 const PV_TOP_N = Number(process.env.PV_TOP_N) || 20;
@@ -71,7 +75,7 @@ statsRouter.get('/', async (req, res) => {
         const hourStart = `${hourDay} 00:00:00`;
         const hourEnd = `${hourDay} 23:59:59`;
         const [summary, errorTypes, uvRow, dailyRows, hourlyRows, hourlyStatsRows, urlRows, pvUrlRows,] = await Promise.all([
-            queryOne(`SELECT
+            statsQueryOne(`SELECT
            COALESCE(SUM(js_errors), 0)::int as js_errors,
            COALESCE(SUM(resource_errors), 0)::int as resource_errors,
            COALESCE(SUM(api_errors), 0)::int as api_errors,
@@ -139,20 +143,20 @@ statsRouter.get('/', async (req, res) => {
            COALESCE(SUM(perf_over_budget), 0)::int as perf_over_budget
          FROM event_daily_stats
          WHERE app_id = ? AND date >= ?::date AND date <= ?::date`, dayParams),
-            query(`SELECT sub_type, SUM(count)::int as count
+            statsQuery(`SELECT sub_type, SUM(count)::int as count
          FROM event_daily_error_types
          WHERE app_id = ? AND date >= ?::date AND date <= ?::date
            AND sub_type IN ('js', 'promise')
          GROUP BY sub_type
          ORDER BY count DESC`, dayParams),
-            queryOne(`SELECT COUNT(*)::int as count
+            statsQueryOne(`SELECT COUNT(*)::int as count
          FROM (
            SELECT visitor_id
            FROM event_daily_visitors
            WHERE app_id = ? AND date >= ?::date AND date <= ?::date
            GROUP BY visitor_id
          ) t`, dayParams),
-            query(`SELECT
+            statsQuery(`SELECT
            to_char(s.date, 'YYYY-MM-DD') as date,
            s.js_errors as errors,
            s.resource_errors as resource_errors,
@@ -197,7 +201,7 @@ statsRouter.get('/', async (req, res) => {
          ORDER BY s.date ASC
          LIMIT 90`, [...dayParams, ...dayParams]),
             // 小时性能：仅查 hourlyDate 当天
-            query(`SELECT
+            statsQuery(`SELECT
            to_char(hour_start, 'YYYY-MM-DD HH24:00') as hour_label,
            metric,
            CASE WHEN value_count > 0
@@ -209,7 +213,7 @@ statsRouter.get('/', async (req, res) => {
            AND hour_start <= ?::timestamp
          ORDER BY hour_start ASC`, [appId, hourStart, hourEnd]),
             // 小时行为/稳定性：仅查当天；UV 用子查询但范围仅 24h
-            query(`SELECT
+            statsQuery(`SELECT
            to_char(h.hour_start, 'YYYY-MM-DD HH24:00') as hour_label,
            h.js_errors as errors,
            h.resource_errors as resource_errors,
@@ -237,7 +241,7 @@ statsRouter.get('/', async (req, res) => {
            AND h.hour_start <= ?::timestamp
          ORDER BY h.hour_start ASC`, [appId, hourStart, hourEnd, appId, hourStart, hourEnd]),
             // URL 写入时已 normalize，读路径不再 regexp
-            query(`SELECT metric, url,
+            statsQuery(`SELECT metric, url,
            SUM(value_sum)::bigint as value_sum,
            SUM(value_count)::int as value_count,
            MIN(value_min) as value_min,
@@ -245,7 +249,7 @@ statsRouter.get('/', async (req, res) => {
          FROM event_daily_perf_urls
          WHERE app_id = ? AND date >= ?::date AND date <= ?::date
          GROUP BY metric, url`, dayParams),
-            query(`WITH ranked AS (
+            statsQuery(`WITH ranked AS (
            SELECT
              to_char(date, 'YYYY-MM-DD') as date,
              url,
@@ -466,6 +470,10 @@ statsRouter.get('/', async (req, res) => {
         res.json(payload);
     }
     catch (error) {
+        if (pgErrorCode(error) === '55P03') {
+            res.setHeader('Retry-After', '2');
+            return res.status(503).json({ error: '聚合表正在重建，请稍后重试' });
+        }
         console.error('Stats error:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
