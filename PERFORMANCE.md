@@ -47,8 +47,8 @@ Reporter 队列（满 10 条或 5s / 卸载 flush）
 POST /api/report
   · 校验字段、粗筛 UA bot
   · event_filters（按 URL，一般不筛 performance）
-  · INSERT events（明细，TTL 默认 7 天）
-  · applyRollup → 日/小时/URL 聚合
+  · 进程内串行队列：一个事务里批量 INSERT events + 按主键合并的 rollup
+  · 提交后去抖回填 P50（不占日聚合行锁）
         │
         ▼
 GET /api/stats
@@ -66,7 +66,7 @@ Admin 性能看板（均值卡片 + 日/小时趋势 + URL Top）
 |------|------|
 | 采集 | `packages/sdk/src/collectors/performance.ts` |
 | 上报 | `packages/sdk/src/reporter.ts` |
-| 入库+rollup | `apps/server/src/routes/report.ts` → `apps/server/src/db/dailyStats.ts` |
+| 入库+rollup | `apps/server/src/routes/report.ts` → `apps/server/src/db/reportWrite.ts` → `apps/server/src/db/dailyStats.ts` |
 | 查询 | `apps/server/src/routes/stats.ts` |
 | 展示 | `apps/admin/src/components/dashboards/PerformanceDashboard.tsx` |
 
@@ -136,7 +136,7 @@ SDK 与服务端统一（可配置）：
 
 超限：SDK 上报 `subType=over_budget`（计入 `perf_over_budget`），合法指标不进 AVG；服务端 rollup/rebuild 同样过滤。
 
-看板 **P50** 写入 `event_daily_stats.*_p50` / `event_hourly_perf.value_p50`（上报批末或 `rebuild-daily` 用 `percentile_cont(0.5)` 回填）。Stats **读路径不再扫** `events`。无样本时 P50 为 0；跨日区间为按日 P50 的 count 加权近似。
+看板 **P50** 写入 `event_daily_stats.*_p50` / `event_hourly_perf.value_p50`（上报事务提交后去抖回填，或 `rebuild-daily` 用 `percentile_cont(0.5)`）。百分位扫描不在聚合行锁里。Stats **读路径不再扫** `events`。无样本时 P50 为 0；跨日区间为按日 P50 的 count 加权近似。
 
 > 部署后执行 `pnpm db:rebuild-daily` 回填历史 P50。
 

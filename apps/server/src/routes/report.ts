@@ -1,11 +1,6 @@
 import { Router } from 'express';
-import { clientQuery, withTransaction } from '../db/index.js';
+import { enqueueReportWrite } from '../db/reportWrite.js';
 import { shouldFilterEvent } from '../filters/eventFilters.js';
-import {
-  applyRollupWithClient,
-  refreshPerfP50Targets,
-  type PerfP50Target,
-} from '../db/dailyStats.js';
 import { invalidateStatsCache } from './stats.js';
 
 export const reportRouter = Router();
@@ -112,59 +107,13 @@ reportRouter.post('/', async (req, res) => {
             : { value: event.data },
         createdAt: now,
       });
+      touchedApps.add(event.appId);
     }
 
     if (toInsert.length > 0) {
-      await withTransaction(async (client) => {
-        const p50Targets: PerfP50Target[] = [];
-        for (const row of toInsert) {
-          try {
-            await clientQuery(
-              client,
-              `INSERT INTO events (
-                type, sub_type, timestamp, app_id, session_id, visitor_id,
-                url, user_agent, client_ip, data, created_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?)`,
-              [
-                row.type,
-                row.subType,
-                row.timestamp,
-                row.appId,
-                row.sessionId,
-                row.visitorId,
-                row.url,
-                row.userAgent,
-                row.clientIp,
-                JSON.stringify(row.data),
-                row.createdAt,
-              ]
-            );
-
-            await applyRollupWithClient(
-              client,
-              {
-                type: row.type,
-                subType: row.subType,
-                timestamp: row.timestamp,
-                appId: row.appId,
-                visitorId: row.visitorId,
-                url: row.url,
-                data: row.data,
-              },
-              { p50Targets }
-            );
-
-            inserted++;
-            touchedApps.add(row.appId);
-          } catch (err) {
-            console.error('Insert error:', err);
-          }
-        }
-
-        // 批末按日/小时窗口回填 P50，避免读路径扫 events
-        await refreshPerfP50Targets(client, p50Targets);
-      });
-
+      // 进程内串行：INSERT + 合并后的 UPSERT 同一事务，P50 在提交后去抖。
+      await enqueueReportWrite(toInsert);
+      inserted = toInsert.length;
       for (const appId of touchedApps) {
         invalidateStatsCache(appId);
       }

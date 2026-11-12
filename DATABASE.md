@@ -1,7 +1,7 @@
 # fe-monitor 数据库设计文档
 
 > 本文档供开发 Agent 使用，描述当前 PostgreSQL 数据库的表结构、索引、约束及业务逻辑。
-> 最后更新：2026-11-12（Stats 加速：单日小时趋势 + 缓存 debounce；events total 走日聚合）
+> 最后更新：2026-11-12（上报写入单飞：合并 UPSERT，P50 离开行锁）
 
 ## 连接信息
 
@@ -158,7 +158,7 @@ pnpm db:filters -- remove --id <id>
 - **主键**: `(app_id, date)`
 - **索引**: `idx_daily_stats_date (date)` — 按日期范围查询
 - **区间汇总**：`SUM(sum)/SUM(count)` 得平均；`MIN(min)` / `MAX(max)` 得区间极值
-- **P50**：写入日表；上报批末 / `rebuild-daily` 用 `percentile_cont(0.5)` 回填。区间汇总按日 P50 以 `count` **加权近似**（单日精确）
+- **P50**：写入日表；上报提交后按 `STATS_P50_DEBOUNCE_MS`（默认 5s）去抖回填，或由 `rebuild-daily` 用 `percentile_cont(0.5)` 写入。百分位扫描不占聚合行锁。区间汇总按日 P50 以 `count` **加权近似**（单日精确）
 
 #### 重建命令
 
@@ -166,7 +166,7 @@ pnpm db:filters -- remove --id <id>
 pnpm db:rebuild-daily    # 全量重建（事务+锁表，防并发冲突）
 ```
 
-> ⚠️ 重建会 TRUNCATE **全部聚合表**（日统计、错误类型、访客、小时性能/行为稳定性、URL 性能/PV）后重新 INSERT，执行期间阻塞所有写入。
+> ⚠️ 重建会 TRUNCATE **全部聚合表**（日统计、错误类型、访客、小时性能/行为稳定性、URL 性能/PV）后重新 INSERT。事务持有 `ACCESS EXCLUSIVE`，期间聚合 UPSERT 会等待。上报侧每个 Node 进程只让一个写入事务去等这把锁，其余请求在内存队列里合并，锁释放后不会变成一串互相等待的事务。
 
 ---
 
@@ -210,7 +210,7 @@ pnpm db:rebuild-daily    # 全量重建（事务+锁表，防并发冲突）
 
 - **主键**: `(app_id, hour_start, metric)`
 - **索引**: `idx_hourly_perf_app_hour (app_id, hour_start)`
-- **用途**: 性能看板「选中单日」时按小时画趋势；写入时与日聚合同事务增量 UPSERT；P50 在上报批末 / rebuild 回填
+- **用途**: 性能看板「选中单日」时按小时画趋势；sum/count/min/max 与日聚合在同一上报事务里按主键合并后 UPSERT；P50 在该事务提交后去抖回填（`STATS_P50_DEBOUNCE_MS`，默认 5s），或由 rebuild 写入
 
 ---
 
@@ -267,7 +267,7 @@ pnpm db:rebuild-daily    # 全量重建（事务+锁表，防并发冲突）
 
 - **主键**: `(app_id, hour_start)`
 - **索引**: `idx_hourly_stats_app_hour (app_id, hour_start)`
-- **用途**: 行为/稳定性看板「选中单日」时按小时画趋势；与日聚合同事务增量 UPSERT
+- **用途**: 行为/稳定性看板「选中单日」时按小时画趋势；与日聚合在同一上报事务里按 `(app_id, hour_start)` 合并后 UPSERT
 - **Stats API**: 返回 `hourlyStats`（含小时 UV，见下表）
 
 ### 10. event_hourly_visitors（小时去重访客）
@@ -329,7 +329,7 @@ pnpm db:rebuild-daily                  # 重建聚合数据
 - 跨天趋势：日表 avg；跨日区间 P50 为按日 P50 的 count 加权近似
 - 单日趋势：`event_hourly_perf`（含 `value_p50`）
 - 慢页面 Top N：`event_daily_perf_urls`
-- 明细仍上报入库，供 rebuild / 写入时回填 P50；TTL 后旧日 P50 仍保留在聚合表
+- 明细仍上报入库，供 rebuild / 去抖回填 P50；TTL 后旧日 P50 仍保留在聚合表
 - **样本有效区间**：`0 < value ≤ 60000` ms（FCP/LCP/Load/domReady）。长驻 SPA / Soft Navigation 下 `startTime` 可达数天，会把 **AVG** 拉爆；SDK 上报与 `extractPerfSamples` / `rebuildDailyStats` 均丢弃超限样本。部署 P50 列后需执行 `pnpm db:rebuild-daily`。
 - **采集公式、口径差异与已知缺口**：见根目录 [`PERFORMANCE.md`](PERFORMANCE.md)。
 
@@ -354,3 +354,15 @@ pnpm db:prune-events
 ```
 
 > ⚠️ TTL 后超出窗口的明细 **无法再 rebuild** 对应区间；部署新小时聚合后需先 `pnpm db:rebuild-daily` 再依赖 TTL。
+
+### 10. 上报写入与行锁
+
+`POST /api/report` 在每个 Node 进程内串行（`apps/server/src/db/reportWrite.ts`）：
+
+1. **一个事务**：批量 `INSERT events`，再按主键合并 UPSERT（同一 `app_id + date` / `hour_start` 只写一次）。并发请求在内存队列合并进这个事务，不各自 `BEGIN`。
+2. **事务提交之后**：有性能样本的日/小时窗口进入 P50 去抖（`STATS_P50_DEBOUNCE_MS`，默认 5000；`0` 表示提交后尽快刷）。先只读 `events` 算 `percentile_cont(0.5)`，再开短事务 `UPDATE` `*_p50`。扫描期间不持有聚合行锁。
+3. 队列过长时拒绝新写入（`REPORT_WRITE_QUEUE_MAX`，默认 20000 条事件），避免重建锁等待期间把进程堆满。单次事务条数见 `REPORT_WRITE_BATCH`（默认 500）。
+
+明细和增量 rollup 必须在同一事务。若先提交 `events` 再 rollup，`rebuildDailyStats` 的快照会把这些明细算进全量结果，随后 rollup 再加一次。
+
+聚合写入顺序与 `rebuildDailyStats` 的 `LOCK TABLE` 列表一致，避免和重建交叉死锁。

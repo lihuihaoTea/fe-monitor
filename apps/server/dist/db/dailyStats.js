@@ -1,4 +1,4 @@
-import { clientQuery, withTransaction } from './index.js';
+import { clientQuery, query, withTransaction } from './index.js';
 /**
  * 与 SDK 一致：丢弃超长样本（长驻 SPA / Soft Navigation 下 startTime 可达数天，
  * 会把 AVG 拉爆）。可用环境变量 PERF_MAX_METRIC_MS 覆盖（毫秒）。
@@ -61,84 +61,169 @@ function perfP50SampleSql() {
     AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS}
 `;
 }
+function emptyDailyP50() {
+    return {
+        fcp: null,
+        lcp: null,
+        load: null,
+        dom_ready: null,
+        ttfb: null,
+        spa_lcp: null,
+    };
+}
+function p50WindowParams(appId, startMs, endMs) {
+    return [appId, startMs, endMs, appId, startMs, endMs, appId, startMs, endMs];
+}
+function asP50(value) {
+    if (value == null)
+        return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+}
+/** 只读 events，不锁聚合行 */
+async function selectDailyP50(appId, day) {
+    const [startMs, endMs] = dayBoundsMs(day);
+    const rows = await query(`WITH samples AS (${perfP50SampleSql()})
+     SELECT metric,
+       ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY v))::bigint as p50
+     FROM samples
+     GROUP BY metric`, p50WindowParams(appId, startMs, endMs));
+    const out = emptyDailyP50();
+    for (const row of rows) {
+        if (row.metric in out)
+            out[row.metric] = asP50(row.p50);
+    }
+    return out;
+}
+async function selectHourlyP50(appId, hour) {
+    const [startMs, endMs] = hourBoundsMs(hour);
+    const rows = await query(`WITH samples AS (${perfP50SampleSql()})
+     SELECT metric,
+       ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY v))::bigint as p50
+     FROM samples
+     GROUP BY metric`, p50WindowParams(appId, startMs, endMs));
+    return rows.map((row) => ({ metric: row.metric, p50: asP50(row.p50) }));
+}
 /**
- * 按日/小时窗口从仍保留的 performance 明细回填 P50 到聚合表。
- * 仅写入路径调用；Stats 读路径不再扫 events。
+ * 按日/小时窗口从仍保留的 performance 明细回填 P50。
+ * 百分位在聚合行锁之外算完，再开短事务写 *_p50。
+ * 不要放进上报事务：扫描期间会把同一 app+date 行锁持有到提交。
+ * 写锁顺序与 rebuildDailyStats 的 LOCK TABLE 一致：先 event_daily_stats，再 event_hourly_perf。
  */
-export async function refreshPerfP50Targets(client, targets) {
+export async function refreshPerfP50Targets(targets) {
     if (targets.length === 0)
         return;
-    const dayKeys = new Map();
-    const hourKeys = new Map();
+    const days = new Map();
+    const hours = new Map();
     for (const t of targets) {
-        dayKeys.set(`${t.appId}|${t.day}`, { appId: t.appId, day: t.day });
-        hourKeys.set(`${t.appId}|${t.hour}`, { appId: t.appId, hour: t.hour });
+        days.set(`${t.appId}|${t.day}`, { appId: t.appId, day: t.day });
+        hours.set(`${t.appId}|${t.hour}`, { appId: t.appId, hour: t.hour });
     }
-    const sampleSql = perfP50SampleSql();
-    for (const { appId, day } of dayKeys.values()) {
-        const [startMs, endMs] = dayBoundsMs(day);
-        const windowParams = [
-            appId,
-            startMs,
-            endMs,
-            appId,
-            startMs,
-            endMs,
-            appId,
-            startMs,
-            endMs,
-        ];
-        await clientQuery(client, `UPDATE event_daily_stats AS d SET
-         fcp_p50 = a.fcp_p50,
-         lcp_p50 = a.lcp_p50,
-         load_p50 = a.load_p50,
-         dom_ready_p50 = a.dom_ready_p50,
-         ttfb_p50 = a.ttfb_p50,
-         spa_lcp_p50 = a.spa_lcp_p50
-       FROM (
-         WITH samples AS (${sampleSql}),
-         agg AS (
-           SELECT metric,
-             ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY v))::bigint as p50
-           FROM samples
-           GROUP BY metric
-         )
-         SELECT
-           (SELECT p50 FROM agg WHERE metric = 'fcp') as fcp_p50,
-           (SELECT p50 FROM agg WHERE metric = 'lcp') as lcp_p50,
-           (SELECT p50 FROM agg WHERE metric = 'load') as load_p50,
-           (SELECT p50 FROM agg WHERE metric = 'dom_ready') as dom_ready_p50,
-           (SELECT p50 FROM agg WHERE metric = 'ttfb') as ttfb_p50,
-           (SELECT p50 FROM agg WHERE metric = 'spa_lcp') as spa_lcp_p50
-       ) a
-       WHERE d.app_id = ? AND d.date = ?::date`, [...windowParams, appId, day]);
+    await refreshPerfP50Windows([...days.values()], [...hours.values()]);
+}
+async function refreshPerfP50Windows(days, hours) {
+    const dailyValues = [];
+    for (const item of [...days].sort((a, b) => `${a.appId}|${a.day}`.localeCompare(`${b.appId}|${b.day}`))) {
+        dailyValues.push({
+            appId: item.appId,
+            day: item.day,
+            p50: await selectDailyP50(item.appId, item.day),
+        });
     }
-    for (const { appId, hour } of hourKeys.values()) {
-        const [startMs, endMs] = hourBoundsMs(hour);
-        const windowParams = [
-            appId,
-            startMs,
-            endMs,
-            appId,
-            startMs,
-            endMs,
-            appId,
-            startMs,
-            endMs,
-        ];
-        await clientQuery(client, `UPDATE event_hourly_perf AS h SET
-         value_p50 = a.p50
-       FROM (
-         WITH samples AS (${sampleSql})
-         SELECT metric,
-           ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY v))::bigint as p50
-         FROM samples
-         GROUP BY metric
-       ) a
-       WHERE h.app_id = ?
-         AND h.hour_start = ?::timestamp
-         AND h.metric = a.metric`, [...windowParams, appId, hour]);
+    const hourlyValues = [];
+    for (const item of [...hours].sort((a, b) => `${a.appId}|${a.hour}`.localeCompare(`${b.appId}|${b.hour}`))) {
+        for (const row of await selectHourlyP50(item.appId, item.hour)) {
+            hourlyValues.push({
+                appId: item.appId,
+                hour: item.hour,
+                metric: row.metric,
+                p50: row.p50,
+            });
+        }
     }
+    hourlyValues.sort((a, b) => `${a.appId}|${a.hour}|${a.metric}`.localeCompare(`${b.appId}|${b.hour}|${b.metric}`));
+    if (dailyValues.length === 0 && hourlyValues.length === 0)
+        return;
+    await withTransaction(async (client) => {
+        for (const row of dailyValues) {
+            await clientQuery(client, `UPDATE event_daily_stats SET
+           fcp_p50 = ?::bigint,
+           lcp_p50 = ?::bigint,
+           load_p50 = ?::bigint,
+           dom_ready_p50 = ?::bigint,
+           ttfb_p50 = ?::bigint,
+           spa_lcp_p50 = ?::bigint
+         WHERE app_id = ? AND date = ?::date`, [
+                row.p50.fcp,
+                row.p50.lcp,
+                row.p50.load,
+                row.p50.dom_ready,
+                row.p50.ttfb,
+                row.p50.spa_lcp,
+                row.appId,
+                row.day,
+            ]);
+        }
+        for (const row of hourlyValues) {
+            await clientQuery(client, `UPDATE event_hourly_perf SET value_p50 = ?::bigint
+         WHERE app_id = ? AND hour_start = ?::timestamp AND metric = ?`, [row.p50, row.appId, row.hour, row.metric]);
+        }
+    });
+}
+const dirtyP50Days = new Map();
+const dirtyP50Hours = new Map();
+let p50Timer = null;
+let p50Running = false;
+function p50DebounceMs() {
+    const n = Number(process.env.STATS_P50_DEBOUNCE_MS);
+    if (Number.isFinite(n) && n >= 0)
+        return n;
+    return 5000;
+}
+function armP50Timer() {
+    if (p50Timer)
+        return;
+    p50Timer = setTimeout(() => {
+        p50Timer = null;
+        void flushScheduledP50();
+    }, p50DebounceMs());
+}
+async function flushScheduledP50() {
+    if (p50Running)
+        return;
+    const days = [...dirtyP50Days.values()];
+    const hours = [...dirtyP50Hours.values()];
+    if (days.length === 0 && hours.length === 0)
+        return;
+    dirtyP50Days.clear();
+    dirtyP50Hours.clear();
+    p50Running = true;
+    try {
+        await refreshPerfP50Windows(days, hours);
+    }
+    catch (err) {
+        console.error('[p50] refresh failed', err);
+        for (const day of days)
+            dirtyP50Days.set(`${day.appId}|${day.day}`, day);
+        for (const hour of hours) {
+            dirtyP50Hours.set(`${hour.appId}|${hour.hour}`, hour);
+        }
+    }
+    finally {
+        p50Running = false;
+    }
+    if (dirtyP50Days.size > 0 || dirtyP50Hours.size > 0)
+        armP50Timer();
+}
+/** 上报提交后调用。同一日/小时窗口合并成一次刷新，默认 5s。 */
+export function schedulePerfP50Refresh(targets) {
+    if (targets.length === 0)
+        return;
+    for (const t of targets) {
+        dirtyP50Days.set(`${t.appId}|${t.day}`, { appId: t.appId, day: t.day });
+        dirtyP50Hours.set(`${t.appId}|${t.hour}`, { appId: t.appId, hour: t.hour });
+    }
+    armP50Timer();
 }
 function emptyDelta() {
     return {
@@ -364,39 +449,148 @@ export function buildDailyDelta(event) {
     }
     return { delta, errorSubType, trackVisitor };
 }
-async function upsertHourlyAndUrl(client, event) {
-    const samples = extractPerfSamples(event);
-    if (samples.length === 0)
-        return;
-    const date = dayKeyFromMs(event.timestamp);
-    const hour = hourKeyFromMs(event.timestamp);
-    const url = normalizePerfUrl(event.url);
-    for (const { metric, value } of samples) {
-        await clientQuery(client, `INSERT INTO event_hourly_perf AS h (
-         app_id, hour_start, metric, value_sum, value_count, value_min, value_max, value_p50
-       ) VALUES (?, ?::timestamp, ?, ?, 1, ?, ?, ?)
-       ON CONFLICT (app_id, hour_start, metric) DO UPDATE SET
-         value_sum = h.value_sum + EXCLUDED.value_sum,
-         value_count = h.value_count + EXCLUDED.value_count,
-         value_min = CASE WHEN h.value_min IS NULL THEN EXCLUDED.value_min
-           ELSE LEAST(h.value_min, EXCLUDED.value_min) END,
-         value_max = CASE WHEN h.value_max IS NULL THEN EXCLUDED.value_max
-           ELSE GREATEST(h.value_max, EXCLUDED.value_max) END`, [event.appId, hour, metric, value, value, value, value]);
-        await clientQuery(client, `INSERT INTO event_daily_perf_urls AS u (
-         app_id, date, metric, url, value_sum, value_count, value_min, value_max
-       ) VALUES (?, ?::date, ?, ?, ?, 1, ?, ?)
-       ON CONFLICT (app_id, date, metric, url) DO UPDATE SET
-         value_sum = u.value_sum + EXCLUDED.value_sum,
-         value_count = u.value_count + EXCLUDED.value_count,
-         value_min = CASE WHEN u.value_min IS NULL THEN EXCLUDED.value_min
-           ELSE LEAST(u.value_min, EXCLUDED.value_min) END,
-         value_max = CASE WHEN u.value_max IS NULL THEN EXCLUDED.value_max
-           ELSE GREATEST(u.value_max, EXCLUDED.value_max) END`, [event.appId, date, metric, url, value, value, value]);
-    }
+function mergeNullableMin(current, extra) {
+    if (extra == null)
+        return current;
+    if (current == null)
+        return extra;
+    return Math.min(current, extra);
 }
-export async function applyRollupWithClient(client, event, options) {
-    const date = dayKeyFromMs(event.timestamp);
-    const { delta, errorSubType, trackVisitor } = buildDailyDelta(event);
+function mergeNullableMax(current, extra) {
+    if (extra == null)
+        return current;
+    if (current == null)
+        return extra;
+    return Math.max(current, extra);
+}
+function mergeDailyDelta(into, extra) {
+    into.jsErrors += extra.jsErrors;
+    into.resourceErrors += extra.resourceErrors;
+    into.apiErrors += extra.apiErrors;
+    into.blankScreens += extra.blankScreens;
+    into.notFound404 += extra.notFound404;
+    into.otherIssues += extra.otherIssues;
+    into.pv += extra.pv;
+    into.clicks += extra.clicks;
+    into.stayDurationSum += extra.stayDurationSum;
+    into.stayCount += extra.stayCount;
+    into.fcpSum += extra.fcpSum;
+    into.fcpCount += extra.fcpCount;
+    if (extra.fcpCount > 0) {
+        into.fcpMin = mergeNullableMin(into.fcpMin, extra.fcpMin);
+        into.fcpMax = mergeNullableMax(into.fcpMax, extra.fcpMax);
+    }
+    into.lcpSum += extra.lcpSum;
+    into.lcpCount += extra.lcpCount;
+    if (extra.lcpCount > 0) {
+        into.lcpMin = mergeNullableMin(into.lcpMin, extra.lcpMin);
+        into.lcpMax = mergeNullableMax(into.lcpMax, extra.lcpMax);
+    }
+    into.loadSum += extra.loadSum;
+    into.loadCount += extra.loadCount;
+    if (extra.loadCount > 0) {
+        into.loadMin = mergeNullableMin(into.loadMin, extra.loadMin);
+        into.loadMax = mergeNullableMax(into.loadMax, extra.loadMax);
+    }
+    into.domReadySum += extra.domReadySum;
+    into.domReadyCount += extra.domReadyCount;
+    if (extra.domReadyCount > 0) {
+        into.domReadyMin = mergeNullableMin(into.domReadyMin, extra.domReadyMin);
+        into.domReadyMax = mergeNullableMax(into.domReadyMax, extra.domReadyMax);
+    }
+    into.ttfbSum += extra.ttfbSum;
+    into.ttfbCount += extra.ttfbCount;
+    if (extra.ttfbCount > 0) {
+        into.ttfbMin = mergeNullableMin(into.ttfbMin, extra.ttfbMin);
+        into.ttfbMax = mergeNullableMax(into.ttfbMax, extra.ttfbMax);
+    }
+    into.spaLcpSum += extra.spaLcpSum;
+    into.spaLcpCount += extra.spaLcpCount;
+    if (extra.spaLcpCount > 0) {
+        into.spaLcpMin = mergeNullableMin(into.spaLcpMin, extra.spaLcpMin);
+        into.spaLcpMax = mergeNullableMax(into.spaLcpMax, extra.spaLcpMax);
+    }
+    into.perfOverBudget += extra.perfOverBudget;
+}
+function cloneDelta(delta) {
+    const next = emptyDelta();
+    mergeDailyDelta(next, delta);
+    return next;
+}
+function deltaHasDailyEffect(delta) {
+    return (delta.jsErrors +
+        delta.resourceErrors +
+        delta.apiErrors +
+        delta.blankScreens +
+        delta.notFound404 +
+        delta.otherIssues +
+        delta.pv +
+        delta.clicks +
+        delta.stayCount +
+        delta.fcpCount +
+        delta.lcpCount +
+        delta.loadCount +
+        delta.domReadyCount +
+        delta.ttfbCount +
+        delta.spaLcpCount +
+        delta.perfOverBudget >
+        0);
+}
+function deltaHasHourlyCounters(delta) {
+    return (delta.jsErrors +
+        delta.resourceErrors +
+        delta.apiErrors +
+        delta.blankScreens +
+        delta.notFound404 +
+        delta.otherIssues +
+        delta.pv +
+        delta.clicks +
+        delta.stayCount >
+        0);
+}
+function addPerfBucket(bucket, value) {
+    if (!bucket)
+        return { sum: value, count: 1, min: value, max: value };
+    bucket.sum += value;
+    bucket.count += 1;
+    bucket.min = Math.min(bucket.min, value);
+    bucket.max = Math.max(bucket.max, value);
+    return bucket;
+}
+async function upsertHourlyPerf(client, appId, hour, metric, bucket) {
+    await clientQuery(client, `INSERT INTO event_hourly_perf AS h (
+       app_id, hour_start, metric, value_sum, value_count, value_min, value_max, value_p50
+     ) VALUES (?, ?::timestamp, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (app_id, hour_start, metric) DO UPDATE SET
+       value_sum = h.value_sum + EXCLUDED.value_sum,
+       value_count = h.value_count + EXCLUDED.value_count,
+       value_min = CASE WHEN h.value_min IS NULL THEN EXCLUDED.value_min
+         ELSE LEAST(h.value_min, EXCLUDED.value_min) END,
+       value_max = CASE WHEN h.value_max IS NULL THEN EXCLUDED.value_max
+         ELSE GREATEST(h.value_max, EXCLUDED.value_max) END`, [
+        appId,
+        hour,
+        metric,
+        bucket.sum,
+        bucket.count,
+        bucket.min,
+        bucket.max,
+        bucket.count === 1 ? bucket.min : null,
+    ]);
+}
+async function upsertDailyPerfUrl(client, appId, date, metric, url, bucket) {
+    await clientQuery(client, `INSERT INTO event_daily_perf_urls AS u (
+       app_id, date, metric, url, value_sum, value_count, value_min, value_max
+     ) VALUES (?, ?::date, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (app_id, date, metric, url) DO UPDATE SET
+       value_sum = u.value_sum + EXCLUDED.value_sum,
+       value_count = u.value_count + EXCLUDED.value_count,
+       value_min = CASE WHEN u.value_min IS NULL THEN EXCLUDED.value_min
+         ELSE LEAST(u.value_min, EXCLUDED.value_min) END,
+       value_max = CASE WHEN u.value_max IS NULL THEN EXCLUDED.value_max
+         ELSE GREATEST(u.value_max, EXCLUDED.value_max) END`, [appId, date, metric, url, bucket.sum, bucket.count, bucket.min, bucket.max]);
+}
+async function upsertDailyStats(client, appId, date, delta) {
     await clientQuery(client, `INSERT INTO event_daily_stats AS s (
        app_id, date,
        js_errors, resource_errors, api_errors, blank_screens,
@@ -494,7 +688,7 @@ export async function applyRollupWithClient(client, event, options) {
               ELSE GREATEST(s.spa_lcp_max, EXCLUDED.spa_lcp_max) END
          ELSE s.spa_lcp_max END,
        perf_over_budget = s.perf_over_budget + EXCLUDED.perf_over_budget`, [
-        event.appId,
+        appId,
         date,
         delta.jsErrors,
         delta.resourceErrors,
@@ -532,90 +726,197 @@ export async function applyRollupWithClient(client, event, options) {
         delta.spaLcpMax,
         delta.perfOverBudget,
     ]);
-    if (errorSubType) {
-        await clientQuery(client, `INSERT INTO event_daily_error_types (app_id, date, sub_type, count)
-       VALUES (?, ?::date, ?, 1)
-       ON CONFLICT (app_id, date, sub_type) DO UPDATE SET
-         count = event_daily_error_types.count + 1`, [event.appId, date, errorSubType]);
+}
+/** 行为 + 稳定性小时聚合（供看板小时趋势，读路径不依赖明细） */
+async function upsertHourlyStats(client, appId, hour, delta) {
+    await clientQuery(client, `INSERT INTO event_hourly_stats AS h (
+       app_id, hour_start,
+       js_errors, resource_errors, api_errors, blank_screens,
+       not_found_404, other_issues, pv, clicks,
+       stay_duration_sum, stay_count
+     ) VALUES (
+       ?, ?::timestamp,
+       ?, ?, ?, ?,
+       ?, ?, ?, ?,
+       ?, ?
+     )
+     ON CONFLICT (app_id, hour_start) DO UPDATE SET
+       js_errors = h.js_errors + EXCLUDED.js_errors,
+       resource_errors = h.resource_errors + EXCLUDED.resource_errors,
+       api_errors = h.api_errors + EXCLUDED.api_errors,
+       blank_screens = h.blank_screens + EXCLUDED.blank_screens,
+       not_found_404 = h.not_found_404 + EXCLUDED.not_found_404,
+       other_issues = h.other_issues + EXCLUDED.other_issues,
+       pv = h.pv + EXCLUDED.pv,
+       clicks = h.clicks + EXCLUDED.clicks,
+       stay_duration_sum = h.stay_duration_sum + EXCLUDED.stay_duration_sum,
+       stay_count = h.stay_count + EXCLUDED.stay_count`, [
+        appId,
+        hour,
+        delta.jsErrors,
+        delta.resourceErrors,
+        delta.apiErrors,
+        delta.blankScreens,
+        delta.notFound404,
+        delta.otherIssues,
+        delta.pv,
+        delta.clicks,
+        delta.stayDurationSum,
+        delta.stayCount,
+    ]);
+}
+async function insertValueRows(client, prefix, suffix, rowSql, rowParams) {
+    const chunkSize = 200;
+    for (let i = 0; i < rowParams.length; i += chunkSize) {
+        const chunk = rowParams.slice(i, i + chunkSize);
+        await clientQuery(client, `${prefix} VALUES ${chunk.map(() => rowSql).join(', ')} ${suffix}`, chunk.flat());
     }
-    if (trackVisitor && event.visitorId) {
-        await clientQuery(client, `INSERT INTO event_daily_visitors (app_id, date, visitor_id)
-       VALUES (?, ?::date, ?)
-       ON CONFLICT DO NOTHING`, [event.appId, date, event.visitorId]);
+}
+function sortedBy(items, key) {
+    return [...items].sort((a, b) => key(a).localeCompare(key(b)));
+}
+/**
+ * 把一批事件合并成按主键一次 UPSERT。
+ * 锁表顺序与 rebuildDailyStats 的 LOCK TABLE 一致，避免和重建交叉死锁。
+ * 全零增量不写日表，避免无意义地锁住当天那一行。
+ */
+export async function applyRollupBatch(client, events) {
+    const daily = new Map();
+    const errors = new Map();
+    const visitors = new Map();
+    const hourlyVisitors = new Map();
+    const pvUrls = new Map();
+    const hourly = new Map();
+    const hourlyPerf = new Map();
+    const dailyPerf = new Map();
+    const p50 = new Map();
+    for (const event of events) {
+        const date = dayKeyFromMs(event.timestamp);
+        const hour = hourKeyFromMs(event.timestamp);
+        const { delta, errorSubType, trackVisitor } = buildDailyDelta(event);
+        if (deltaHasDailyEffect(delta)) {
+            const key = `${event.appId}|${date}`;
+            const row = daily.get(key);
+            if (!row)
+                daily.set(key, { appId: event.appId, date, delta: cloneDelta(delta) });
+            else
+                mergeDailyDelta(row.delta, delta);
+        }
+        if (errorSubType) {
+            const key = `${event.appId}|${date}|${errorSubType}`;
+            const row = errors.get(key);
+            if (!row) {
+                errors.set(key, { appId: event.appId, date, subType: errorSubType, count: 1 });
+            }
+            else {
+                row.count += 1;
+            }
+        }
+        if (trackVisitor && event.visitorId) {
+            visitors.set(`${event.appId}|${date}|${event.visitorId}`, {
+                appId: event.appId,
+                date,
+                visitorId: event.visitorId,
+            });
+            hourlyVisitors.set(`${event.appId}|${hour}|${event.visitorId}`, {
+                appId: event.appId,
+                hour,
+                visitorId: event.visitorId,
+            });
+        }
+        if (delta.pv > 0) {
+            const url = normalizePerfUrl(event.url);
+            const key = `${event.appId}|${date}|${url}`;
+            const row = pvUrls.get(key);
+            if (!row)
+                pvUrls.set(key, { appId: event.appId, date, url, pv: delta.pv });
+            else
+                row.pv += delta.pv;
+        }
+        if (deltaHasHourlyCounters(delta)) {
+            const key = `${event.appId}|${hour}`;
+            const row = hourly.get(key);
+            if (!row)
+                hourly.set(key, { appId: event.appId, hour, delta: cloneDelta(delta) });
+            else
+                mergeDailyDelta(row.delta, delta);
+        }
+        const samples = extractPerfSamples(event);
+        if (samples.length > 0) {
+            p50.set(`${event.appId}|${date}|${hour}`, {
+                appId: event.appId,
+                day: date,
+                hour,
+            });
+            const url = normalizePerfUrl(event.url);
+            for (const sample of samples) {
+                const hourKey = `${event.appId}|${hour}|${sample.metric}`;
+                const hourRow = hourlyPerf.get(hourKey);
+                if (!hourRow) {
+                    hourlyPerf.set(hourKey, {
+                        appId: event.appId,
+                        hour,
+                        metric: sample.metric,
+                        bucket: addPerfBucket(undefined, sample.value),
+                    });
+                }
+                else {
+                    addPerfBucket(hourRow.bucket, sample.value);
+                }
+                const urlKey = `${event.appId}|${date}|${sample.metric}|${url}`;
+                const urlRow = dailyPerf.get(urlKey);
+                if (!urlRow) {
+                    dailyPerf.set(urlKey, {
+                        appId: event.appId,
+                        date,
+                        metric: sample.metric,
+                        url,
+                        bucket: addPerfBucket(undefined, sample.value),
+                    });
+                }
+                else {
+                    addPerfBucket(urlRow.bucket, sample.value);
+                }
+            }
+        }
     }
-    if (delta.pv > 0) {
-        const url = normalizePerfUrl(event.url);
+    for (const row of sortedBy(daily.values(), (item) => `${item.appId}|${item.date}`)) {
+        await upsertDailyStats(client, row.appId, row.date, row.delta);
+    }
+    const errorRows = sortedBy(errors.values(), (item) => `${item.appId}|${item.date}|${item.subType}`);
+    if (errorRows.length > 0) {
+        await insertValueRows(client, `INSERT INTO event_daily_error_types (app_id, date, sub_type, count)`, `ON CONFLICT (app_id, date, sub_type) DO UPDATE SET
+         count = event_daily_error_types.count + EXCLUDED.count`, '(?, ?::date, ?, ?)', errorRows.map((row) => [row.appId, row.date, row.subType, row.count]));
+    }
+    const visitorRows = sortedBy(visitors.values(), (item) => `${item.appId}|${item.date}|${item.visitorId}`);
+    if (visitorRows.length > 0) {
+        await insertValueRows(client, `INSERT INTO event_daily_visitors (app_id, date, visitor_id)`, 'ON CONFLICT DO NOTHING', '(?, ?::date, ?)', visitorRows.map((row) => [row.appId, row.date, row.visitorId]));
+    }
+    for (const row of sortedBy(hourlyPerf.values(), (item) => `${item.appId}|${item.hour}|${item.metric}`)) {
+        await upsertHourlyPerf(client, row.appId, row.hour, row.metric, row.bucket);
+    }
+    for (const row of sortedBy(hourly.values(), (item) => `${item.appId}|${item.hour}`)) {
+        await upsertHourlyStats(client, row.appId, row.hour, row.delta);
+    }
+    const hourVisitorRows = sortedBy(hourlyVisitors.values(), (item) => `${item.appId}|${item.hour}|${item.visitorId}`);
+    if (hourVisitorRows.length > 0) {
+        await insertValueRows(client, `INSERT INTO event_hourly_visitors (app_id, hour_start, visitor_id)`, 'ON CONFLICT DO NOTHING', '(?, ?::timestamp, ?)', hourVisitorRows.map((row) => [row.appId, row.hour, row.visitorId]));
+    }
+    for (const row of sortedBy(dailyPerf.values(), (item) => `${item.appId}|${item.date}|${item.metric}|${item.url}`)) {
+        await upsertDailyPerfUrl(client, row.appId, row.date, row.metric, row.url, row.bucket);
+    }
+    for (const row of sortedBy(pvUrls.values(), (item) => `${item.appId}|${item.date}|${item.url}`)) {
         await clientQuery(client, `INSERT INTO event_daily_pv_urls AS u (app_id, date, url, pv)
        VALUES (?, ?::date, ?, ?)
        ON CONFLICT (app_id, date, url) DO UPDATE SET
-         pv = u.pv + EXCLUDED.pv`, [event.appId, date, url, delta.pv]);
+         pv = u.pv + EXCLUDED.pv`, [row.appId, row.date, row.url, row.pv]);
     }
-    await upsertHourlyStats(client, event, delta, trackVisitor);
-    await upsertHourlyAndUrl(client, event);
-    if (options?.p50Targets && extractPerfSamples(event).length > 0) {
-        options.p50Targets.push({
-            appId: event.appId,
-            day: date,
-            hour: hourKeyFromMs(event.timestamp),
-        });
-    }
+    return [...p50.values()];
 }
-/** 行为 + 稳定性小时聚合（供看板小时趋势，读路径不依赖明细） */
-async function upsertHourlyStats(client, event, delta, trackVisitor) {
-    const hasCounters = delta.jsErrors ||
-        delta.resourceErrors ||
-        delta.apiErrors ||
-        delta.blankScreens ||
-        delta.notFound404 ||
-        delta.otherIssues ||
-        delta.pv ||
-        delta.clicks ||
-        delta.stayCount;
-    if (!hasCounters && !trackVisitor)
-        return;
-    const hour = hourKeyFromMs(event.timestamp);
-    if (hasCounters) {
-        await clientQuery(client, `INSERT INTO event_hourly_stats AS h (
-         app_id, hour_start,
-         js_errors, resource_errors, api_errors, blank_screens,
-         not_found_404, other_issues, pv, clicks,
-         stay_duration_sum, stay_count
-       ) VALUES (
-         ?, ?::timestamp,
-         ?, ?, ?, ?,
-         ?, ?, ?, ?,
-         ?, ?
-       )
-       ON CONFLICT (app_id, hour_start) DO UPDATE SET
-         js_errors = h.js_errors + EXCLUDED.js_errors,
-         resource_errors = h.resource_errors + EXCLUDED.resource_errors,
-         api_errors = h.api_errors + EXCLUDED.api_errors,
-         blank_screens = h.blank_screens + EXCLUDED.blank_screens,
-         not_found_404 = h.not_found_404 + EXCLUDED.not_found_404,
-         other_issues = h.other_issues + EXCLUDED.other_issues,
-         pv = h.pv + EXCLUDED.pv,
-         clicks = h.clicks + EXCLUDED.clicks,
-         stay_duration_sum = h.stay_duration_sum + EXCLUDED.stay_duration_sum,
-         stay_count = h.stay_count + EXCLUDED.stay_count`, [
-            event.appId,
-            hour,
-            delta.jsErrors,
-            delta.resourceErrors,
-            delta.apiErrors,
-            delta.blankScreens,
-            delta.notFound404,
-            delta.otherIssues,
-            delta.pv,
-            delta.clicks,
-            delta.stayDurationSum,
-            delta.stayCount,
-        ]);
-    }
-    if (trackVisitor && event.visitorId) {
-        await clientQuery(client, `INSERT INTO event_hourly_visitors (app_id, hour_start, visitor_id)
-       VALUES (?, ?::timestamp, ?)
-       ON CONFLICT DO NOTHING`, [event.appId, hour, event.visitorId]);
-    }
+export async function applyRollupWithClient(client, event, options) {
+    const targets = await applyRollupBatch(client, [event]);
+    if (options?.p50Targets)
+        options.p50Targets.push(...targets);
 }
 /**
  * rebuild / stats 查询用：与 normalizePageUrl 对齐。
