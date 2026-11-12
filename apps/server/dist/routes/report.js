@@ -5,16 +5,20 @@ import { applyRollupWithClient } from '../db/dailyStats.js';
 import { invalidateStatsCache } from './stats.js';
 export const reportRouter = Router();
 function isBot(userAgent) {
+    // 避免 /http/i、/java/i 等过宽规则误伤真实浏览器 UA
     const botPatterns = [
-        /bot/i,
+        /bot\b/i,
         /spider/i,
         /crawler/i,
-        /curl/i,
-        /wget/i,
-        /python/i,
-        /java/i,
-        /http/i,
-        /scraper/i,
+        /curl\//i,
+        /wget\//i,
+        /python-requests/i,
+        /httpclient/i,
+        /scrapy/i,
+        /headlesschrome/i,
+        /phantomjs/i,
+        /slurp/i,
+        /bingpreview/i,
     ];
     return botPatterns.some((pattern) => pattern.test(userAgent));
 }

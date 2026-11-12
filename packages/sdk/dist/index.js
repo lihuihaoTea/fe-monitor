@@ -324,44 +324,122 @@ var ApiCollector = class {
 };
 
 // src/collectors/blank.ts
+var MOUNT_SELECTOR = "#app, #root, #__next, #__nuxt, #__umi, [data-fe-monitor-root]";
+var CHECK_DELAYS_MS = [1500, 4e3, 8e3];
 var BlankCollector = class {
   constructor(config, reporter) {
-    this.checkTimer = null;
+    this.reported = false;
+    this.timers = [];
     this.config = config;
     this.reporter = reporter;
   }
   install() {
+    const start = () => {
+      for (const delay of CHECK_DELAYS_MS) {
+        this.timers.push(
+          setTimeout(() => {
+            this.checkBlankScreen(`t${delay}`);
+          }, delay)
+        );
+      }
+    };
     if (document.readyState === "complete") {
-      this.checkBlankScreen();
+      start();
     } else {
-      window.addEventListener("load", () => {
-        this.checkBlankScreen();
-      });
+      window.addEventListener("load", start, { once: true });
     }
   }
-  checkBlankScreen() {
-    setTimeout(() => {
-      const root = document.body || document.documentElement;
-      if (!root) {
-        this.reportBlank("no-root");
-        return;
-      }
-      const hasContent = this.hasVisibleContent(root);
-      if (!hasContent) {
-        this.reportBlank("no-visible-content");
-      }
-    }, 1e3);
+  uninstall() {
+    for (const t of this.timers) clearTimeout(t);
+    this.timers = [];
   }
-  hasVisibleContent(element) {
-    const text = element.textContent || "";
-    const hasText = text.trim().length > 0;
-    if (hasText) return true;
-    const images = element.getElementsByTagName("img");
-    const canvases = element.getElementsByTagName("canvas");
-    const videos = element.getElementsByTagName("video");
-    return images.length > 0 || canvases.length > 0 || videos.length > 0;
+  checkBlankScreen(phase) {
+    if (this.reported) return;
+    const root = document.body || document.documentElement;
+    if (!root) {
+      this.reportBlank("no-root", phase);
+      return;
+    }
+    if (this.hasVisibleContent(root)) return;
+    this.reportBlank("no-visible-content", phase);
   }
-  reportBlank(reason) {
+  /**
+   * 判定是否「看起来有内容」：
+   * - 优先看 SPA 挂载点，避免 body 里残留的 script/noscript/注释文本误判
+   * - 再用视口中心 elementsFromPoint，过滤纯外壳节点
+   */
+  hasVisibleContent(fallbackRoot) {
+    const mount = document.querySelector(MOUNT_SELECTOR);
+    const root = mount || fallbackRoot;
+    if (this.elementHasMeaningfulContent(root)) return true;
+    const x = Math.max(0, Math.floor(window.innerWidth / 2));
+    const y = Math.max(0, Math.floor(window.innerHeight / 2));
+    if (x === 0 && y === 0) return false;
+    let hitEls = [];
+    try {
+      hitEls = document.elementsFromPoint(x, y) || [];
+    } catch {
+      hitEls = [];
+    }
+    for (const el of hitEls) {
+      if (this.isChromeElement(el)) continue;
+      if (this.elementHasMeaningfulContent(el)) return true;
+    }
+    return false;
+  }
+  isChromeElement(el) {
+    const tag = el.tagName?.toLowerCase();
+    if (!tag) return true;
+    if (tag === "html" || tag === "body" || tag === "head") return true;
+    if (el.matches?.(MOUNT_SELECTOR)) {
+      return !this.elementHasMeaningfulContent(el);
+    }
+    return false;
+  }
+  elementHasMeaningfulContent(el) {
+    if (!el) return false;
+    const node = el;
+    if (node.querySelector?.("img, canvas, video, svg")) {
+      const media = node.querySelectorAll("img, canvas, video, svg");
+      for (let i = 0; i < media.length; i++) {
+        const m = media[i];
+        if (this.isVisiblyRendered(m)) return true;
+      }
+    }
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, {
+      acceptNode: (textNode) => {
+        const parent = textNode.parentElement;
+        if (!parent) return NodeFilter.FILTER_REJECT;
+        const tag = parent.tagName.toLowerCase();
+        if (tag === "script" || tag === "style" || tag === "noscript" || tag === "template") {
+          return NodeFilter.FILTER_REJECT;
+        }
+        if (!textNode.textContent || !textNode.textContent.trim()) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        if (!this.isVisiblyRendered(parent)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    return Boolean(walker.nextNode());
+  }
+  isVisiblyRendered(el) {
+    try {
+      const style = window.getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+      if (Number(style.opacity) === 0) return false;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) return false;
+      return true;
+    } catch {
+      return true;
+    }
+  }
+  reportBlank(reason, phase) {
+    if (this.reported) return;
+    this.reported = true;
+    this.uninstall();
+    const mount = document.querySelector(MOUNT_SELECTOR);
     const monitorEvent = {
       type: "blank",
       subType: reason,
@@ -373,6 +451,8 @@ var BlankCollector = class {
       userAgent: navigator.userAgent,
       data: {
         reason,
+        phase,
+        mount: mount ? mount.id || mount.tagName : null,
         html: document.documentElement.outerHTML.substring(0, 500)
       }
     };
@@ -381,24 +461,101 @@ var BlankCollector = class {
 };
 
 // src/collectors/performance.ts
+var DEFAULT_MAX_METRIC_MS = 6e4;
+var LCP_FALLBACK_MS = 8e3;
 var PerformanceCollector = class {
   constructor(config, reporter) {
     this.loadReported = false;
     this.fcpReported = false;
     this.lcpValue = null;
+    /** LCP 候选更新时的页面 URL（归因用，避免离开时路由已变） */
+    this.lcpUrl = null;
     this.lcpReported = false;
     this.lcpObserver = null;
+    this.timers = [];
+    this.routeStartedAt = 0;
+    this.spaLcpReportedForRoute = false;
+    this.unboundRouteHooks = [];
     this.config = config;
     this.reporter = reporter;
+    this.maxMetricMs = typeof config.maxPerfMetricMs === "number" && config.maxPerfMetricMs > 0 ? config.maxPerfMetricMs : DEFAULT_MAX_METRIC_MS;
+    this.spaMetrics = config.spaPerfMetrics !== false;
   }
   install() {
+    this.routeStartedAt = performance.now();
     this.observePaint();
     this.observeLCP();
-    window.addEventListener("load", () => {
+    this.bindLoad();
+    this.scheduleLcpFallbacks();
+    if (this.spaMetrics) {
+      this.bindRouteHooks();
+    }
+  }
+  uninstall() {
+    for (const t of this.timers) clearTimeout(t);
+    this.timers = [];
+    for (const off of this.unboundRouteHooks) off();
+    this.unboundRouteHooks = [];
+    try {
+      this.lcpObserver?.disconnect();
+    } catch {
+    }
+  }
+  /** markAppReady 时补一次 LCP，避免用户从不切走导致无样本 */
+  onAppReady() {
+    this.timers.push(
       setTimeout(() => {
-        this.reportLoadTiming();
-      }, 0);
+        this.flushLcp("app-ready");
+      }, 1e3)
+    );
+  }
+  bindLoad() {
+    const reportLoad = () => {
+      setTimeout(() => this.reportLoadTiming(), 0);
+    };
+    if (document.readyState === "complete") {
+      reportLoad();
+    } else {
+      window.addEventListener("load", reportLoad, { once: true });
+    }
+  }
+  scheduleLcpFallbacks() {
+    this.timers.push(
+      setTimeout(() => this.flushLcp("timeout"), LCP_FALLBACK_MS)
+    );
+    const ric = window.requestIdleCallback;
+    if (typeof ric === "function") {
+      ric(() => this.flushLcp("idle"), { timeout: LCP_FALLBACK_MS });
+    }
+  }
+  bindRouteHooks() {
+    const onRoute = () => this.handleRouteChange();
+    window.addEventListener("hashchange", onRoute);
+    window.addEventListener("popstate", onRoute);
+    this.unboundRouteHooks.push(() => {
+      window.removeEventListener("hashchange", onRoute);
+      window.removeEventListener("popstate", onRoute);
     });
+    const historyProto = window.history;
+    const unbindHooks = this.unboundRouteHooks;
+    const wrap = (method) => {
+      const original = historyProto[method];
+      historyProto[method] = function(...args) {
+        const ret = original.apply(this, args);
+        onRoute();
+        return ret;
+      };
+      unbindHooks.push(() => {
+        historyProto[method] = original;
+      });
+    };
+    wrap("pushState");
+    wrap("replaceState");
+  }
+  handleRouteChange() {
+    this.flushLcp("route-change");
+    this.routeStartedAt = performance.now();
+    this.spaLcpReportedForRoute = false;
   }
   observePaint() {
     if (!("PerformanceObserver" in window)) return;
@@ -431,42 +588,46 @@ var PerformanceCollector = class {
   }
   observeLCP() {
     if (!("PerformanceObserver" in window)) return;
-    try {
-      this.lcpObserver = new PerformanceObserver((list) => {
-        const entries = list.getEntries();
-        const lastEntry = entries[entries.length - 1];
-        if (lastEntry) {
-          this.lcpValue = lastEntry.startTime;
+    const onEntries = (list) => {
+      const entries = list.getEntries();
+      const lastEntry = entries[entries.length - 1];
+      if (!lastEntry) return;
+      this.lcpValue = lastEntry.startTime;
+      this.lcpUrl = window.location.href;
+      if (this.spaMetrics && !this.spaLcpReportedForRoute) {
+        const spaValue = lastEntry.startTime - this.routeStartedAt;
+        if (spaValue > 0 && this.isValidMetric(spaValue)) {
+          this.spaLcpReportedForRoute = true;
+          this.reportPerformance("spa_lcp", spaValue, {
+            navigationType: "spa",
+            routeStartedAt: Math.round(this.routeStartedAt)
+          });
         }
-      });
+      }
+    };
+    try {
+      this.lcpObserver = new PerformanceObserver((list) => onEntries(list));
       this.lcpObserver.observe({
         type: "largest-contentful-paint",
         buffered: true
       });
     } catch {
       try {
-        this.lcpObserver = new PerformanceObserver((list) => {
-          const entries = list.getEntries();
-          const lastEntry = entries[entries.length - 1];
-          if (lastEntry) this.lcpValue = lastEntry.startTime;
-        });
+        this.lcpObserver = new PerformanceObserver((list) => onEntries(list));
         this.lcpObserver.observe({ entryTypes: ["largest-contentful-paint"] });
       } catch {
         return;
       }
     }
-    const finalizeLcp = () => {
-      this.flushLcp();
-    };
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") finalizeLcp();
+      if (document.visibilityState === "hidden") this.flushLcp("hidden");
     });
-    window.addEventListener("pagehide", finalizeLcp);
+    window.addEventListener("pagehide", () => this.flushLcp("pagehide"));
   }
-  flushLcp() {
+  flushLcp(_reason) {
     if (this.lcpReported || this.lcpValue == null) return;
     this.lcpReported = true;
-    this.reportPerformance("lcp", this.lcpValue);
+    this.reportPerformance("lcp", this.lcpValue, void 0, this.lcpUrl || void 0);
     try {
       this.lcpObserver?.disconnect();
     } catch {
@@ -474,18 +635,88 @@ var PerformanceCollector = class {
   }
   reportLoadTiming() {
     if (this.loadReported) return;
-    const timing = performance.timing;
-    const loadTime = timing.loadEventEnd - timing.fetchStart;
-    const domReady = timing.domContentLoadedEventEnd - timing.fetchStart;
+    const nav = this.getNavigationTiming();
+    if (!nav) return;
+    const loadTime = nav.loadEventEnd - nav.fetchStart;
+    const domReady = nav.domContentLoadedEventEnd - nav.fetchStart;
+    if (!this.isValidMetric(loadTime)) {
+      this.reportOverBudget("load", loadTime);
+      return;
+    }
+    const ttfb = nav.responseStart - nav.requestStart;
     this.reportPerformance("load", loadTime, {
-      domReady,
-      dns: timing.domainLookupEnd - timing.domainLookupStart,
-      tcp: timing.connectEnd - timing.connectStart,
-      ttfb: timing.responseStart - timing.requestStart
+      domReady: this.isValidMetric(domReady) ? Math.round(domReady) : void 0,
+      ttfb: this.isValidMetric(ttfb) ? Math.round(ttfb) : void 0,
+      dns: Math.max(0, Math.round(nav.domainLookupEnd - nav.domainLookupStart)),
+      tcp: Math.max(0, Math.round(nav.connectEnd - nav.connectStart))
     });
     this.loadReported = true;
   }
-  reportPerformance(metric, value, extra) {
+  getNavigationTiming() {
+    try {
+      const entries = performance.getEntriesByType?.(
+        "navigation"
+      );
+      const nav = entries?.[0];
+      if (nav && nav.fetchStart >= 0) {
+        return {
+          fetchStart: nav.fetchStart,
+          loadEventEnd: nav.loadEventEnd,
+          domContentLoadedEventEnd: nav.domContentLoadedEventEnd,
+          domainLookupStart: nav.domainLookupStart,
+          domainLookupEnd: nav.domainLookupEnd,
+          connectStart: nav.connectStart,
+          connectEnd: nav.connectEnd,
+          requestStart: nav.requestStart,
+          responseStart: nav.responseStart
+        };
+      }
+    } catch {
+    }
+    const timing = performance.timing;
+    if (!timing || !timing.fetchStart) return null;
+    return {
+      fetchStart: timing.fetchStart,
+      loadEventEnd: timing.loadEventEnd,
+      domContentLoadedEventEnd: timing.domContentLoadedEventEnd,
+      domainLookupStart: timing.domainLookupStart,
+      domainLookupEnd: timing.domainLookupEnd,
+      connectStart: timing.connectStart,
+      connectEnd: timing.connectEnd,
+      requestStart: timing.requestStart,
+      responseStart: timing.responseStart
+    };
+  }
+  isValidMetric(value) {
+    return Number.isFinite(value) && value > 0 && value <= this.maxMetricMs;
+  }
+  reportOverBudget(metric, value) {
+    if (!Number.isFinite(value) || value <= this.maxMetricMs) return;
+    const event = {
+      type: "performance",
+      subType: "over_budget",
+      timestamp: Date.now(),
+      appId: this.config.appId,
+      sessionId: getSessionId(),
+      visitorId: getVisitorId(),
+      url: window.location.href,
+      userAgent: navigator.userAgent,
+      data: {
+        metric,
+        value: Math.round(value),
+        maxMetricMs: this.maxMetricMs
+      }
+    };
+    this.reporter.report(event);
+  }
+  reportPerformance(metric, value, extra, urlOverride) {
+    if (!this.isValidMetric(value)) {
+      this.reportOverBudget(metric, value);
+      if (this.config.debug) {
+        console.warn("[FE Monitor] drop invalid performance sample", metric, value);
+      }
+      return;
+    }
     const monitorEvent = {
       type: "performance",
       subType: metric,
@@ -493,7 +724,7 @@ var PerformanceCollector = class {
       appId: this.config.appId,
       sessionId: getSessionId(),
       visitorId: getVisitorId(),
-      url: window.location.href,
+      url: urlOverride || window.location.href,
       userAgent: navigator.userAgent,
       data: {
         metric,
@@ -1210,6 +1441,7 @@ var Monitor = class {
     this.reporter = null;
     this.collectors = [];
     this.assetGuard = null;
+    this.performanceCollector = null;
     this.initialized = false;
     this.appReady = false;
     this.installed = /* @__PURE__ */ new Set();
@@ -1279,6 +1511,7 @@ var Monitor = class {
       window.__FE_MONITOR_APP_READY__ = 1;
     }
     this.installAfterReadyCollectors();
+    this.performanceCollector?.onAppReady();
   }
   isInitialized() {
     return this.initialized;
@@ -1364,6 +1597,7 @@ var Monitor = class {
     this.initialized = false;
     this.appReady = false;
     this.assetGuard = null;
+    this.performanceCollector = null;
     this.collectors = [];
     this.installed.clear();
   }
@@ -1420,10 +1654,11 @@ var Monitor = class {
       this.pushCollector("blank", new BlankCollector(this.config, this.reporter));
     }
     if (c.performance !== false) {
-      this.pushCollector(
-        "performance",
-        new PerformanceCollector(this.config, this.reporter)
+      this.performanceCollector = new PerformanceCollector(
+        this.config,
+        this.reporter
       );
+      this.pushCollector("performance", this.performanceCollector);
     }
     if (c.behavior !== false) {
       this.pushCollector(
@@ -1451,10 +1686,11 @@ var Monitor = class {
       this.pushCollector("blank", new BlankCollector(this.config, this.reporter));
     }
     if (after.performance && !this.installed.has("performance")) {
-      this.pushCollector(
-        "performance",
-        new PerformanceCollector(this.config, this.reporter)
+      this.performanceCollector = new PerformanceCollector(
+        this.config,
+        this.reporter
       );
+      this.pushCollector("performance", this.performanceCollector);
     }
     if (after.behavior && !this.installed.has("behavior")) {
       this.pushCollector(
