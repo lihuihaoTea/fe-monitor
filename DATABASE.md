@@ -1,7 +1,7 @@
 # fe-monitor 数据库设计文档
 
 > 本文档供开发 Agent 使用，描述当前 PostgreSQL 数据库的表结构、索引、约束及业务逻辑。
-> 最后更新：2026-11-12（P50 写入日/小时聚合；Stats 读路径离开 events）
+> 最后更新：2026-11-12（Stats 加速：单日小时趋势 + 缓存 debounce；events total 走日聚合）
 
 ## 连接信息
 

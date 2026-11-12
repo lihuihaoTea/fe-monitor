@@ -11,21 +11,29 @@ export function useFilters() {
   const queryClient = useQueryClient();
   const appId = useFilterStore((s) => s.appId);
   const dateRange = useFilterStore((s) => s.dateRange);
+  const hourlyDate = useFilterStore((s) => s.hourlyDate);
   const setAppId = useFilterStore((s) => s.setAppId);
   const setDateRange = useFilterStore((s) => s.setDateRange);
+  const setHourlyDate = useFilterStore((s) => s.setHourlyDate);
 
   const startDate = dateRange[0].format('YYYY-MM-DD');
   const endDate = dateRange[1].format('YYYY-MM-DD');
+  const hourlyDateKey = hourlyDate.format('YYYY-MM-DD');
 
   const {
     data: stats = createEmptyStats(dateRange[0], dateRange[1]),
     isFetching,
     isPending,
   } = useQuery({
-    queryKey: queryKeys.stats(appId, startDate, endDate),
+    queryKey: queryKeys.stats(appId, startDate, endDate, hourlyDateKey),
     queryFn: async () => {
       try {
-        const data = await fetchStats({ appId, startDate, endDate });
+        const data = await fetchStats({
+          appId,
+          startDate,
+          endDate,
+          hourlyDate: hourlyDateKey,
+        });
         return normalizeStats(data, dateRange[0], dateRange[1]);
       } catch (error) {
         console.error(error);
@@ -40,6 +48,8 @@ export function useFilters() {
     setAppId,
     dateRange,
     setDateRange,
+    hourlyDate,
+    setHourlyDate,
     stats,
     loading: isPending || isFetching,
     refresh: () => {

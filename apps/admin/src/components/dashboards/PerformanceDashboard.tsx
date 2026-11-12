@@ -1,6 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { DatePicker, Typography } from 'antd';
-import { type Dayjs } from 'dayjs';
 import { MetricSummary } from '@/components/MetricSummary';
 import { CombinedTrendChart } from '@/components/CombinedTrendChart';
 import { PerformanceUrlTopList } from '@/components/PerformanceUrlTopList';
@@ -31,18 +30,11 @@ const TREND_SERIES_EXTRA = [
 ];
 
 export function PerformanceDashboard() {
-  const { stats, loading } = useFilters();
+  const { stats, loading, hourlyDate, setHourlyDate } = useFilters();
   const dateRange = useFilterStore((s) => s.dateRange);
   const rangeStart = dateRange[0].startOf('day');
   const rangeEnd = dateRange[1].startOf('day');
-
-  const [hourlyDay, setHourlyDay] = useState<Dayjs>(() => rangeEnd);
-
-  const clampedHourlyDay = useMemo(() => {
-    if (hourlyDay.isBefore(rangeStart, 'day')) return rangeStart;
-    if (hourlyDay.isAfter(rangeEnd, 'day')) return rangeEnd;
-    return hourlyDay;
-  }, [hourlyDay, rangeStart, rangeEnd]);
+  const clampedHourlyDay = hourlyDate;
 
   const emptyMetric = { avg: 0, p50: 0, min: 0, max: 0, count: 0 };
   const performance = stats?.performance ?? {
@@ -169,7 +161,7 @@ export function PerformanceDashboard() {
               );
             }}
             onChange={(value) => {
-              if (value) setHourlyDay(value.startOf('day'));
+              if (value) setHourlyDate(value);
             }}
           />
         }

@@ -70,11 +70,15 @@ export async function fetchStats(params: {
   appId: string;
   startDate: string;
   endDate: string;
+  hourlyDate?: string;
 }): Promise<StatsResponse> {
   const url = new URL(`${API_BASE}/api/stats`);
   url.searchParams.set('appId', params.appId);
   url.searchParams.set('startDate', params.startDate);
   url.searchParams.set('endDate', params.endDate);
+  if (params.hourlyDate) {
+    url.searchParams.set('hourlyDate', params.hourlyDate);
+  }
 
   const res = await apiFetch(url.toString());
   if (!res.ok) {

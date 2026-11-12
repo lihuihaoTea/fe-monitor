@@ -1,6 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { Card, DatePicker, Table } from 'antd';
-import type { Dayjs } from 'dayjs';
 import { MetricSummary } from '@/components/MetricSummary';
 import { CombinedTrendChart } from '@/components/CombinedTrendChart';
 import { LatestErrorList } from '@/components/LatestErrorList';
@@ -18,21 +17,15 @@ const STABILITY_SERIES = [
 ];
 
 export function StabilityDashboard() {
-  const { stats, loading } = useFilters();
+  const { stats, loading, hourlyDate, setHourlyDate } = useFilters();
   const dateRange = useFilterStore((s) => s.dateRange);
   const rangeStart = dateRange[0].startOf('day');
   const rangeEnd = dateRange[1].startOf('day');
-  const [hourlyDay, setHourlyDay] = useState<Dayjs>(() => rangeEnd);
 
   const errors = stats?.errors;
   const stability = stats?.stability;
   const daily = stats?.daily || [];
-
-  const clampedHourlyDay = useMemo(() => {
-    if (hourlyDay.isBefore(rangeStart, 'day')) return rangeStart;
-    if (hourlyDay.isAfter(rangeEnd, 'day')) return rangeEnd;
-    return hourlyDay;
-  }, [hourlyDay, rangeStart, rangeEnd]);
+  const clampedHourlyDay = hourlyDate;
 
   const hourlyOfDay = useMemo(() => {
     const filled = fillHourlyStatsRange(stats?.hourlyStats, clampedHourlyDay);
@@ -106,7 +99,7 @@ export function StabilityDashboard() {
               );
             }}
             onChange={(value) => {
-              if (value) setHourlyDay(value.startOf('day'));
+              if (value) setHourlyDate(value);
             }}
           />
         }

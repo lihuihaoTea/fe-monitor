@@ -30,12 +30,11 @@ const BEHAVIOR_SERIES = [
 ];
 
 export function BehaviorDashboard() {
-  const { stats, loading } = useFilters();
+  const { stats, loading, hourlyDate, setHourlyDate } = useFilters();
   const dateRange = useFilterStore((s) => s.dateRange);
   const rangeStart = dateRange[0].startOf('day');
   const rangeEnd = dateRange[1].startOf('day');
   const [pageDay, setPageDay] = useState<Dayjs>(() => rangeEnd);
-  const [hourlyDay, setHourlyDay] = useState<Dayjs>(() => rangeEnd);
 
   const clampedPageDay = useMemo(() => {
     if (pageDay.isBefore(rangeStart, 'day')) return rangeStart;
@@ -43,11 +42,7 @@ export function BehaviorDashboard() {
     return pageDay;
   }, [pageDay, rangeStart, rangeEnd]);
 
-  const clampedHourlyDay = useMemo(() => {
-    if (hourlyDay.isBefore(rangeStart, 'day')) return rangeStart;
-    if (hourlyDay.isAfter(rangeEnd, 'day')) return rangeEnd;
-    return hourlyDay;
-  }, [hourlyDay, rangeStart, rangeEnd]);
+  const clampedHourlyDay = hourlyDate;
 
   const behavior = stats?.behavior;
   const daily = stats?.daily || [];
@@ -130,7 +125,7 @@ export function BehaviorDashboard() {
               );
             }}
             onChange={(value) => {
-              if (value) setHourlyDay(value.startOf('day'));
+              if (value) setHourlyDate(value);
             }}
           />
         }

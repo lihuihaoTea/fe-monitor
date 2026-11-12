@@ -17,8 +17,12 @@ export function createQueryClient() {
 }
 
 export const queryKeys = {
-  stats: (appId: string, startDate: string, endDate: string) =>
-    ['stats', appId, startDate, endDate] as const,
+  stats: (
+    appId: string,
+    startDate: string,
+    endDate: string,
+    hourlyDate: string
+  ) => ['stats', appId, startDate, endDate, hourlyDate] as const,
   eventSubTypes: (
     appId: string,
     startDate: string,

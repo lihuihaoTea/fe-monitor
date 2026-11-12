@@ -37,6 +37,33 @@ function parseSort(sortByRaw, sortOrderRaw) {
         orderSql: `ORDER BY ${expr} ${order} NULLS LAST, timestamp DESC, id DESC`,
     };
 }
+function dayKeyFromBound(ms) {
+    const d = new Date(ms);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+/** 无关键词筛选时，用日聚合估算 total，避免扫 events COUNT(*) */
+async function totalFromDailyStats(category, appId, start, end) {
+    const startDay = dayKeyFromBound(start);
+    const endDay = dayKeyFromBound(end);
+    const column = category === 'js'
+        ? 'js_errors'
+        : category === 'resource'
+            ? 'resource_errors'
+            : category === 'api'
+                ? 'api_errors'
+                : category === 'other'
+                    ? 'other_issues'
+                    : null;
+    if (!column)
+        return null;
+    const row = await queryOne(`SELECT COALESCE(SUM(${column}), 0)::int as total
+     FROM event_daily_stats
+     WHERE app_id = ? AND date >= ?::date AND date <= ?::date`, [appId, startDay, endDay]);
+    return Number(row?.total) || 0;
+}
 eventsRouter.get('/sub-types', async (req, res) => {
     try {
         const { appId, startDate, endDate } = req.query;
@@ -51,14 +78,23 @@ eventsRouter.get('/sub-types', async (req, res) => {
         }
         const start = parseRangeBound(startDate, 'start');
         const end = parseRangeBound(endDate, 'end');
-        const whereCategory = categoryWhereSql(category);
-        const rows = await query(`SELECT DISTINCT sub_type as subtype
-       FROM events
-       WHERE app_id = ? AND ${whereCategory}
-         AND timestamp >= ? AND timestamp <= ?
-         AND sub_type IS NOT NULL AND TRIM(sub_type) != ''
-       ORDER BY subtype ASC`, [appId, start, end]);
-        const fromDb = rows.map((r) => r.subtype).filter(Boolean);
+        const startDay = dayKeyFromBound(start);
+        const endDay = dayKeyFromBound(end);
+        let fromDb = [];
+        if (category === 'js' || category === 'other') {
+            const rows = await query(`SELECT DISTINCT sub_type as subtype
+         FROM event_daily_error_types
+         WHERE app_id = ? AND date >= ?::date AND date <= ?::date
+           AND sub_type IS NOT NULL AND TRIM(sub_type) != ''
+         ORDER BY subtype ASC`, [appId, startDay, endDay]);
+            fromDb = rows.map((r) => r.subtype).filter(Boolean);
+            if (category === 'js') {
+                fromDb = fromDb.filter((s) => s === 'js' || s === 'promise');
+            }
+            else {
+                fromDb = fromDb.filter((s) => s !== 'js' && s !== 'promise');
+            }
+        }
         const merged = Array.from(new Set([...PRESET_SUB_TYPES[category], ...fromDb]));
         res.json({
             category,
@@ -104,16 +140,16 @@ eventsRouter.get('/latest', async (req, res) => {
             baseParams.push(subTypeValue);
         }
         if (messageKeyword) {
+            // 只查固定 jsonb 路径，避免 data::text LIKE 全表拖垮
             baseConditions.push(`(
         COALESCE(data->>'message', '') LIKE ?
         OR COALESCE(data->>'resourceUrl', '') LIKE ?
         OR COALESCE(data->>'apiUrl', '') LIKE ?
         OR COALESCE(data->>'error', '') LIKE ?
         OR COALESCE(data->>'statusText', '') LIKE ?
-        OR data::text LIKE ?
       )`);
             const like = `%${messageKeyword}%`;
-            baseParams.push(like, like, like, like, like, like);
+            baseParams.push(like, like, like, like, like);
         }
         if (urlKeyword) {
             baseConditions.push('url LIKE ?');
@@ -131,7 +167,6 @@ eventsRouter.get('/latest', async (req, res) => {
             listConditions.push(order === 'DESC' ? '(timestamp, id) < (?, ?)' : '(timestamp, id) > (?, ?)');
             listParams.push(cursorTs, cursorId);
         }
-        const baseWhere = baseConditions.join(' AND ');
         const listWhere = listConditions.join(' AND ');
         let listSql = `SELECT id, type, sub_type, timestamp, url, data
        FROM events
@@ -141,8 +176,11 @@ eventsRouter.get('/latest', async (req, res) => {
         if (!useKeyset) {
             listSql += ` OFFSET ${offset}`;
         }
-        const [totalRow, rows] = await Promise.all([
-            queryOne(`SELECT COUNT(*)::int as total FROM events WHERE ${baseWhere}`, baseParams),
+        const canUseAggTotal = !messageKeyword && !urlKeyword && !subTypeValue && category !== 'performance';
+        const [total, rows] = await Promise.all([
+            canUseAggTotal
+                ? totalFromDailyStats(category, appId, start, end)
+                : queryOne(`SELECT COUNT(*)::int as total FROM events WHERE ${baseConditions.join(' AND ')}`, baseParams).then((row) => Number(row?.total) || 0),
             query(listSql, listParams),
         ]);
         const last = rows[rows.length - 1];
@@ -156,13 +194,16 @@ eventsRouter.get('/latest', async (req, res) => {
             category,
             page,
             limit,
-            total: Number(totalRow?.total) || 0,
+            total: total ?? 0,
             nextCursor,
             paginationMode: useKeyset ? 'keyset' : 'offset',
+            totalSource: canUseAggTotal ? 'daily_stats' : 'events',
             filters: {
                 subType: subTypeValue || null,
                 messageKeyword: messageKeyword || null,
                 urlKeyword: urlKeyword || null,
+                sortBy,
+                sortOrder: order === 'ASC' ? 'ascend' : 'descend',
             },
             list: rows.map(mapEventRow),
         });
