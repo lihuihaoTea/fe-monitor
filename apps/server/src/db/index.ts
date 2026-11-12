@@ -156,10 +156,19 @@ export async function initDB() {
       dom_ready_count INT NOT NULL DEFAULT 0,
       dom_ready_min BIGINT,
       dom_ready_max BIGINT,
+      ttfb_sum BIGINT NOT NULL DEFAULT 0,
+      ttfb_count INT NOT NULL DEFAULT 0,
+      ttfb_min BIGINT,
+      ttfb_max BIGINT,
+      spa_lcp_sum BIGINT NOT NULL DEFAULT 0,
+      spa_lcp_count INT NOT NULL DEFAULT 0,
+      spa_lcp_min BIGINT,
+      spa_lcp_max BIGINT,
+      perf_over_budget INT NOT NULL DEFAULT 0,
       PRIMARY KEY (app_id, date)
     );
 
-    -- 兼容旧库：补齐 min/max 列
+    -- 兼容旧库：补齐 min/max / ttfb / spa_lcp / over_budget 列
     ALTER TABLE event_daily_stats
       ADD COLUMN IF NOT EXISTS fcp_min BIGINT,
       ADD COLUMN IF NOT EXISTS fcp_max BIGINT,
@@ -168,7 +177,16 @@ export async function initDB() {
       ADD COLUMN IF NOT EXISTS load_min BIGINT,
       ADD COLUMN IF NOT EXISTS load_max BIGINT,
       ADD COLUMN IF NOT EXISTS dom_ready_min BIGINT,
-      ADD COLUMN IF NOT EXISTS dom_ready_max BIGINT;
+      ADD COLUMN IF NOT EXISTS dom_ready_max BIGINT,
+      ADD COLUMN IF NOT EXISTS ttfb_sum BIGINT NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS ttfb_count INT NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS ttfb_min BIGINT,
+      ADD COLUMN IF NOT EXISTS ttfb_max BIGINT,
+      ADD COLUMN IF NOT EXISTS spa_lcp_sum BIGINT NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS spa_lcp_count INT NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS spa_lcp_min BIGINT,
+      ADD COLUMN IF NOT EXISTS spa_lcp_max BIGINT,
+      ADD COLUMN IF NOT EXISTS perf_over_budget INT NOT NULL DEFAULT 0;
 
     CREATE TABLE IF NOT EXISTS event_daily_error_types (
       app_id TEXT NOT NULL,
@@ -210,13 +228,37 @@ export async function initDB() {
       PRIMARY KEY (app_id, date, metric, url)
     );
 
-    -- 行为：按 URL 日 PV（Top10 / 最低页）
+    -- 行为：按 URL 日 PV（Top/Bottom N）
     CREATE TABLE IF NOT EXISTS event_daily_pv_urls (
       app_id TEXT NOT NULL,
       date DATE NOT NULL,
       url TEXT NOT NULL,
       pv INT NOT NULL DEFAULT 0,
       PRIMARY KEY (app_id, date, url)
+    );
+
+    -- 行为 + 稳定性：按小时计数聚合（看板小时趋势，不依赖明细）
+    CREATE TABLE IF NOT EXISTS event_hourly_stats (
+      app_id TEXT NOT NULL,
+      hour_start TIMESTAMP NOT NULL,
+      js_errors INT NOT NULL DEFAULT 0,
+      resource_errors INT NOT NULL DEFAULT 0,
+      api_errors INT NOT NULL DEFAULT 0,
+      blank_screens INT NOT NULL DEFAULT 0,
+      not_found_404 INT NOT NULL DEFAULT 0,
+      other_issues INT NOT NULL DEFAULT 0,
+      pv INT NOT NULL DEFAULT 0,
+      clicks INT NOT NULL DEFAULT 0,
+      stay_duration_sum BIGINT NOT NULL DEFAULT 0,
+      stay_count INT NOT NULL DEFAULT 0,
+      PRIMARY KEY (app_id, hour_start)
+    );
+
+    CREATE TABLE IF NOT EXISTS event_hourly_visitors (
+      app_id TEXT NOT NULL,
+      hour_start TIMESTAMP NOT NULL,
+      visitor_id TEXT NOT NULL,
+      PRIMARY KEY (app_id, hour_start, visitor_id)
     );
 
     CREATE INDEX IF NOT EXISTS idx_daily_stats_date
@@ -229,6 +271,10 @@ export async function initDB() {
       ON event_daily_perf_urls(app_id, date, metric);
     CREATE INDEX IF NOT EXISTS idx_daily_pv_urls_lookup
       ON event_daily_pv_urls(app_id, date);
+    CREATE INDEX IF NOT EXISTS idx_hourly_stats_app_hour
+      ON event_hourly_stats(app_id, hour_start);
+    CREATE INDEX IF NOT EXISTS idx_hourly_visitors_app_hour
+      ON event_hourly_visitors(app_id, hour_start);
   `);
 
   await seedDefaultFilters();
@@ -240,6 +286,9 @@ export async function initDB() {
   const hourlyCount = await queryOne<{ count: string | number }>(
     `SELECT COUNT(*)::int as count FROM event_hourly_perf`
   );
+  const hourlyStatsCount = await queryOne<{ count: string | number }>(
+    `SELECT COUNT(*)::int as count FROM event_hourly_stats`
+  );
   const pvUrlCount = await queryOne<{ count: string | number }>(
     `SELECT COUNT(*)::int as count FROM event_daily_pv_urls`
   );
@@ -250,6 +299,7 @@ export async function initDB() {
     Number(eventCount?.count) > 0 &&
     (Number(dailyCount?.count) === 0 ||
       Number(hourlyCount?.count) === 0 ||
+      Number(hourlyStatsCount?.count) === 0 ||
       Number(pvUrlCount?.count) === 0);
   if (needRebuild) {
     console.log('检测到历史 events 或缺聚合，开始重建…');

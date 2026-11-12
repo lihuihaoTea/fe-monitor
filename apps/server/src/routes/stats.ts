@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query, queryOne } from '../db/index.js';
 import {
+  MAX_PERF_METRIC_MS,
   normalizePageUrl,
   sqlNormalizePageUrl,
 } from '../db/dailyStats.js';
@@ -18,9 +19,9 @@ const nOrNull = (v: string | number | null | undefined) => {
 const CACHE_TTL_MS = Number(process.env.STATS_CACHE_TTL_MS) || 45_000;
 const PERF_URL_TOP_N = Number(process.env.PERF_URL_TOP_N) || 20;
 /** 行为看板：每日访问量最高页数 */
-const PV_TOP_N = Number(process.env.PV_TOP_N) || 10;
+const PV_TOP_N = Number(process.env.PV_TOP_N) || 20;
 /** 行为看板：每日访问量最低页数 */
-const PV_BOTTOM_N = Number(process.env.PV_BOTTOM_N) || 3;
+const PV_BOTTOM_N = Number(process.env.PV_BOTTOM_N) || 20;
 const statsCache = new Map<string, { expires: number; payload: unknown }>();
 
 function cacheKey(appId: string, startDate: unknown, endDate: unknown) {
@@ -36,10 +37,12 @@ function metricBlock(
   sum: number,
   count: number,
   min: number | null,
-  max: number | null
+  max: number | null,
+  p50?: number | null
 ) {
   return {
     avg: avg(sum, count),
+    p50: p50 != null && Number.isFinite(p50) ? Math.round(p50) : 0,
     min: count > 0 && min != null ? min : 0,
     max: count > 0 && max != null ? max : 0,
     count,
@@ -89,8 +92,21 @@ statsRouter.get('/', async (req, res) => {
     const hourStart = `${startDay} 00:00:00`;
     const hourEnd = `${endDay} 23:59:59`;
 
-    const [summary, errorTypes, uvRow, dailyRows, hourlyRows, urlRows, pvUrlRows] =
-      await Promise.all([
+    const startMs = new Date(`${startDay}T00:00:00`).getTime();
+    const endMs = new Date(`${endDay}T23:59:59.999`).getTime();
+
+    const [
+      summary,
+      errorTypes,
+      uvRow,
+      dailyRows,
+      hourlyRows,
+      hourlyStatsRows,
+      urlRows,
+      pvUrlRows,
+      p50Rows,
+      dailyP50Rows,
+    ] = await Promise.all([
         queryOne<Record<string, string | number | null>>(
           `SELECT
              COALESCE(SUM(js_errors), 0)::int as js_errors,
@@ -118,7 +134,16 @@ statsRouter.get('/', async (req, res) => {
              COALESCE(SUM(dom_ready_sum), 0)::bigint as dom_ready_sum,
              COALESCE(SUM(dom_ready_count), 0)::int as dom_ready_count,
              MIN(dom_ready_min) as dom_ready_min,
-             MAX(dom_ready_max) as dom_ready_max
+             MAX(dom_ready_max) as dom_ready_max,
+             COALESCE(SUM(ttfb_sum), 0)::bigint as ttfb_sum,
+             COALESCE(SUM(ttfb_count), 0)::int as ttfb_count,
+             MIN(ttfb_min) as ttfb_min,
+             MAX(ttfb_max) as ttfb_max,
+             COALESCE(SUM(spa_lcp_sum), 0)::bigint as spa_lcp_sum,
+             COALESCE(SUM(spa_lcp_count), 0)::int as spa_lcp_count,
+             MIN(spa_lcp_min) as spa_lcp_min,
+             MAX(spa_lcp_max) as spa_lcp_max,
+             COALESCE(SUM(perf_over_budget), 0)::int as perf_over_budget
            FROM event_daily_stats
            WHERE app_id = ? AND date >= ?::date AND date <= ?::date`,
           dayParams
@@ -164,6 +189,11 @@ statsRouter.get('/', async (req, res) => {
              CASE WHEN s.dom_ready_count > 0
                THEN ROUND(s.dom_ready_sum::numeric / s.dom_ready_count)
                ELSE 0 END as dom_ready,
+             CASE WHEN s.ttfb_count > 0
+               THEN ROUND(s.ttfb_sum::numeric / s.ttfb_count) ELSE 0 END as ttfb,
+             CASE WHEN s.spa_lcp_count > 0
+               THEN ROUND(s.spa_lcp_sum::numeric / s.spa_lcp_count)
+               ELSE 0 END as spa_lcp,
              COALESCE(v.uv, 0)::int as uv
            FROM event_daily_stats s
            LEFT JOIN (
@@ -194,6 +224,37 @@ statsRouter.get('/', async (req, res) => {
              AND hour_start <= ?::timestamp
            ORDER BY hour_start ASC`,
           [appId, hourStart, hourEnd]
+        ),
+
+        query<Record<string, string | number | null>>(
+          `SELECT
+             to_char(h.hour_start, 'YYYY-MM-DD HH24:00') as hour_label,
+             h.js_errors as errors,
+             h.resource_errors as resource_errors,
+             h.api_errors as api_errors,
+             h.blank_screens as blank_screens,
+             h.not_found_404 as not_found_404,
+             h.other_issues as other_issues,
+             h.pv,
+             h.clicks,
+             CASE WHEN h.stay_count > 0
+               THEN ROUND(h.stay_duration_sum::numeric / h.stay_count)
+               ELSE 0 END as avg_stay,
+             COALESCE(v.uv, 0)::int as uv
+           FROM event_hourly_stats h
+           LEFT JOIN (
+             SELECT hour_start, COUNT(*)::int as uv
+             FROM event_hourly_visitors
+             WHERE app_id = ?
+               AND hour_start >= ?::timestamp
+               AND hour_start <= ?::timestamp
+             GROUP BY hour_start
+           ) v ON v.hour_start = h.hour_start
+           WHERE h.app_id = ?
+             AND h.hour_start >= ?::timestamp
+             AND h.hour_start <= ?::timestamp
+           ORDER BY h.hour_start ASC`,
+          [appId, hourStart, hourEnd, appId, hourStart, hourEnd]
         ),
 
         query<UrlAggRow>(
@@ -250,11 +311,98 @@ statsRouter.get('/', async (req, res) => {
            ORDER BY date ASC, pv DESC`,
           [...dayParams, PV_TOP_N, PV_BOTTOM_N]
         ),
+
+        // 区间 P50：基于仍在 TTL 内的明细（无明细则为空）
+        query<{ metric: string; p50: string | number | null }>(
+          `SELECT metric, ROUND(p50)::bigint as p50 FROM (
+             SELECT 'fcp' as metric,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float) as p50
+             FROM events
+             WHERE app_id = ? AND type = 'performance' AND sub_type = 'fcp'
+               AND timestamp >= ? AND timestamp <= ?
+               AND (data->>'value')::float > 0
+               AND (data->>'value')::float <= ?
+             UNION ALL
+             SELECT 'lcp',
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float)
+             FROM events
+             WHERE app_id = ? AND type = 'performance' AND sub_type = 'lcp'
+               AND timestamp >= ? AND timestamp <= ?
+               AND (data->>'value')::float > 0
+               AND (data->>'value')::float <= ?
+             UNION ALL
+             SELECT 'load',
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float)
+             FROM events
+             WHERE app_id = ? AND type = 'performance' AND sub_type = 'load'
+               AND timestamp >= ? AND timestamp <= ?
+               AND (data->>'value')::float > 0
+               AND (data->>'value')::float <= ?
+             UNION ALL
+             SELECT 'dom_ready',
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'domReady')::float)
+             FROM events
+             WHERE app_id = ? AND type = 'performance' AND sub_type = 'load'
+               AND timestamp >= ? AND timestamp <= ?
+               AND (data->>'domReady')::float > 0
+               AND (data->>'domReady')::float <= ?
+             UNION ALL
+             SELECT 'ttfb',
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'ttfb')::float)
+             FROM events
+             WHERE app_id = ? AND type = 'performance' AND sub_type = 'load'
+               AND timestamp >= ? AND timestamp <= ?
+               AND (data->>'ttfb')::float > 0
+               AND (data->>'ttfb')::float <= ?
+             UNION ALL
+             SELECT 'spa_lcp',
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float)
+             FROM events
+             WHERE app_id = ? AND type = 'performance' AND sub_type = 'spa_lcp'
+               AND timestamp >= ? AND timestamp <= ?
+               AND (data->>'value')::float > 0
+               AND (data->>'value')::float <= ?
+           ) t`,
+          [
+            appId, startMs, endMs, MAX_PERF_METRIC_MS,
+            appId, startMs, endMs, MAX_PERF_METRIC_MS,
+            appId, startMs, endMs, MAX_PERF_METRIC_MS,
+            appId, startMs, endMs, MAX_PERF_METRIC_MS,
+            appId, startMs, endMs, MAX_PERF_METRIC_MS,
+            appId, startMs, endMs, MAX_PERF_METRIC_MS,
+          ]
+        ),
+
+        query<{ date: string; metric: string; p50: string | number | null }>(
+          `SELECT to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD') as date,
+                  sub_type as metric,
+                  ROUND(percentile_cont(0.5) WITHIN GROUP (
+                    ORDER BY (data->>'value')::float
+                  ))::bigint as p50
+           FROM events
+           WHERE app_id = ? AND type = 'performance'
+             AND sub_type IN ('fcp', 'lcp', 'load', 'spa_lcp')
+             AND timestamp >= ? AND timestamp <= ?
+             AND (data->>'value')::float > 0
+             AND (data->>'value')::float <= ?
+           GROUP BY 1, 2`,
+          [appId, startMs, endMs, MAX_PERF_METRIC_MS]
+        ),
       ]);
 
     const s = summary || {};
     const rowNum = (key: string) => n(s[key]);
     const rowMin = (key: string) => nOrNull(s[key]);
+    const p50Map = new Map<string, number>();
+    for (const row of p50Rows) {
+      const v = nOrNull(row.p50);
+      if (v != null) p50Map.set(row.metric, v);
+    }
+    const dailyP50Map = new Map<string, number>();
+    for (const row of dailyP50Rows) {
+      const v = nOrNull(row.p50);
+      if (v != null) dailyP50Map.set(`${row.date}|${row.metric}`, v);
+    }
 
     const daily = dailyRows.map((row) => ({
       date: row.date,
@@ -270,20 +418,41 @@ statsRouter.get('/', async (req, res) => {
       lcp: n(row.lcp),
       load: n(row.load),
       domReady: n(row.dom_ready ?? row.domReady),
+      ttfb: n(row.ttfb),
+      spaLcp: n(row.spa_lcp ?? row.spaLcp),
+      fcpP50: dailyP50Map.get(`${row.date}|fcp`) || 0,
+      lcpP50: dailyP50Map.get(`${row.date}|lcp`) || 0,
+      loadP50: dailyP50Map.get(`${row.date}|load`) || 0,
       avgStay: n(row.avg_stay ?? row.avgStay),
       clicks: n(row.clicks),
     }));
 
-    // 小时点：按 hour 透视 4 指标
+    // 小时点：按 hour 透视指标
     const hourlyMap = new Map<
       string,
-      { hour: string; fcp: number; lcp: number; load: number; domReady: number }
+      {
+        hour: string;
+        fcp: number;
+        lcp: number;
+        load: number;
+        domReady: number;
+        ttfb: number;
+        spaLcp: number;
+      }
     >();
     for (const row of hourlyRows) {
       const hour = String(row.hour_label);
       let point = hourlyMap.get(hour);
       if (!point) {
-        point = { hour, fcp: 0, lcp: 0, load: 0, domReady: 0 };
+        point = {
+          hour,
+          fcp: 0,
+          lcp: 0,
+          load: 0,
+          domReady: 0,
+          ttfb: 0,
+          spaLcp: 0,
+        };
         hourlyMap.set(hour, point);
       }
       const value = n(row.avg_value);
@@ -291,10 +460,26 @@ statsRouter.get('/', async (req, res) => {
       else if (row.metric === 'lcp') point.lcp = value;
       else if (row.metric === 'load') point.load = value;
       else if (row.metric === 'dom_ready') point.domReady = value;
+      else if (row.metric === 'ttfb') point.ttfb = value;
+      else if (row.metric === 'spa_lcp') point.spaLcp = value;
     }
     const hourly = Array.from(hourlyMap.values()).sort((a, b) =>
       a.hour.localeCompare(b.hour)
     );
+
+    const hourlyStats = hourlyStatsRows.map((row) => ({
+      hour: String(row.hour_label || ''),
+      errors: n(row.errors),
+      resourceErrors: n(row.resource_errors ?? row.resourceErrors),
+      apiErrors: n(row.api_errors ?? row.apiErrors),
+      blankScreens: n(row.blank_screens ?? row.blankScreens),
+      notFound404: n(row.not_found_404 ?? row.notFound404),
+      otherIssues: n(row.other_issues ?? row.otherIssues),
+      pv: n(row.pv),
+      uv: n(row.uv),
+      clicks: n(row.clicks),
+      avgStay: n(row.avg_stay ?? row.avgStay),
+    }));
 
     // Top N URL：各指标按 avg 降序
     const emptyUrlList = () => [] as Array<{
@@ -309,12 +494,16 @@ statsRouter.get('/', async (req, res) => {
       lcp: emptyUrlList(),
       load: emptyUrlList(),
       domReady: emptyUrlList(),
+      ttfb: emptyUrlList(),
+      spaLcp: emptyUrlList(),
     };
     const buckets: Record<string, typeof perfByUrl.fcp> = {
       fcp: perfByUrl.fcp,
       lcp: perfByUrl.lcp,
       load: perfByUrl.load,
       dom_ready: perfByUrl.domReady,
+      ttfb: perfByUrl.ttfb,
+      spa_lcp: perfByUrl.spaLcp,
     };
     for (const row of urlRows) {
       const bucket = buckets[row.metric];
@@ -393,26 +582,48 @@ statsRouter.get('/', async (req, res) => {
           rowNum('fcp_sum'),
           rowNum('fcp_count'),
           rowMin('fcp_min'),
-          rowMin('fcp_max')
+          rowMin('fcp_max'),
+          p50Map.get('fcp')
         ),
         lcp: metricBlock(
           rowNum('lcp_sum'),
           rowNum('lcp_count'),
           rowMin('lcp_min'),
-          rowMin('lcp_max')
+          rowMin('lcp_max'),
+          p50Map.get('lcp')
         ),
         load: metricBlock(
           rowNum('load_sum'),
           rowNum('load_count'),
           rowMin('load_min'),
-          rowMin('load_max')
+          rowMin('load_max'),
+          p50Map.get('load')
         ),
         domReady: metricBlock(
           rowNum('dom_ready_sum'),
           rowNum('dom_ready_count'),
           rowMin('dom_ready_min'),
-          rowMin('dom_ready_max')
+          rowMin('dom_ready_max'),
+          p50Map.get('dom_ready')
         ),
+        ttfb: metricBlock(
+          rowNum('ttfb_sum'),
+          rowNum('ttfb_count'),
+          rowMin('ttfb_min'),
+          rowMin('ttfb_max'),
+          p50Map.get('ttfb')
+        ),
+        spaLcp: metricBlock(
+          rowNum('spa_lcp_sum'),
+          rowNum('spa_lcp_count'),
+          rowMin('spa_lcp_min'),
+          rowMin('spa_lcp_max'),
+          p50Map.get('spa_lcp')
+        ),
+        overBudget: rowNum('perf_over_budget'),
+        maxMetricMs: MAX_PERF_METRIC_MS,
+        note:
+          '各指标样本集独立（count 可能不同）；P50 来自仍保留的 performance 明细（默认 TTL 7 天），无明细时为 0。',
       },
       behavior: {
         pv: rowNum('pv'),
@@ -422,6 +633,7 @@ statsRouter.get('/', async (req, res) => {
       },
       daily,
       hourly,
+      hourlyStats,
       perfByUrl,
       pvPagesByDay,
     };

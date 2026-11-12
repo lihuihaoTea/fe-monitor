@@ -175,6 +175,8 @@ monitor.markAppReady();
 | `collectors` | `object` | 见下 | `init` 时立即安装的采集器 |
 | `collectorsAfterReady` | `object` | `{}` | `markAppReady()` 后再安装（仅对 init 时未装的项生效） |
 | `assetGuard` | `AssetGuardConfig` | `{}` | 静态资源守卫细项 |
+| `maxPerfMetricMs` | `number` | `60000` | 性能样本上限；超限丢弃并报 `over_budget` |
+| `spaPerfMetrics` | `boolean` | `true` | 是否采集路由级 `spa_lcp` |
 
 ### `collectors` / `collectorsAfterReady`
 
@@ -260,8 +262,8 @@ interface MonitorEvent {
 | `error` | `js` / `promise` / `manual` / `404` | ErrorCollector / `error()` |
 | `resource` | `img` / `script` / … / assetGuard 子类型 | Resource / AssetGuard |
 | `api` | `fetch` / `xhr` | ApiCollector |
-| `blank` | 启发式原因 | BlankCollector |
-| `performance` | `fcp` / `lcp` / `load` / `domReady` 等 | PerformanceCollector |
+| `blank` | `no-visible-content` / `no-root` | BlankCollector（load 后 1.5s/4s/8s 抽检挂载点与视口中心） |
+| `performance` | `fcp` / `lcp` / `load`（domReady 嵌在 load） | PerformanceCollector；单样本 `>60000ms` 丢弃 |
 | `behavior` | `pv` / `stay` / 自定义 | BehaviorCollector / `track()` |
 
 上报策略：队列满 10 条或每 5s flush；页面卸载时尽量送出；`assetGuard` hard 事件立即上报。

@@ -18,3 +18,6 @@ dist
 *.tgz
 packages/sdk/.npmrc
 apps/server/data/
+
+# 本地云服务器 / 数据库凭据说明（含密码，禁止提交）
+LOCAL_CLOUD.md

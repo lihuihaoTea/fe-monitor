@@ -26,6 +26,7 @@ export class Monitor {
   private collectors: Array<{ install: () => void; uninstall?: () => void }> =
     [];
   private assetGuard: AssetGuardCollector | null = null;
+  private performanceCollector: PerformanceCollector | null = null;
   private initialized = false;
   private appReady = false;
   private installed = new Set<CollectorName>();
@@ -103,6 +104,7 @@ export class Monitor {
       window.__FE_MONITOR_APP_READY__ = 1;
     }
     this.installAfterReadyCollectors();
+    this.performanceCollector?.onAppReady();
   }
 
   isInitialized() {
@@ -205,6 +207,7 @@ export class Monitor {
     this.initialized = false;
     this.appReady = false;
     this.assetGuard = null;
+    this.performanceCollector = null;
     this.collectors = [];
     this.installed.clear();
   }
@@ -265,10 +268,11 @@ export class Monitor {
       this.pushCollector('blank', new BlankCollector(this.config, this.reporter));
     }
     if (c.performance !== false) {
-      this.pushCollector(
-        'performance',
-        new PerformanceCollector(this.config, this.reporter)
+      this.performanceCollector = new PerformanceCollector(
+        this.config,
+        this.reporter
       );
+      this.pushCollector('performance', this.performanceCollector);
     }
     if (c.behavior !== false) {
       this.pushCollector(
@@ -298,10 +302,11 @@ export class Monitor {
       this.pushCollector('blank', new BlankCollector(this.config, this.reporter));
     }
     if (after.performance && !this.installed.has('performance')) {
-      this.pushCollector(
-        'performance',
-        new PerformanceCollector(this.config, this.reporter)
+      this.performanceCollector = new PerformanceCollector(
+        this.config,
+        this.reporter
       );
+      this.pushCollector('performance', this.performanceCollector);
     }
     if (after.behavior && !this.installed.has('behavior')) {
       this.pushCollector(

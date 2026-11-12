@@ -14,6 +14,8 @@ export type EventCategory = 'js' | 'resource' | 'api' | 'other' | 'performance';
 
 export interface PerfMetricSummary {
   avg: number;
+  /** 中位数；无明细窗口时可能为 0 */
+  p50: number;
   min: number;
   max: number;
   count: number;
@@ -44,6 +46,23 @@ export interface HourlyPoint {
   lcp: number;
   load: number;
   domReady: number;
+  ttfb: number;
+  spaLcp: number;
+}
+
+/** 行为 + 稳定性小时点（来自 event_hourly_stats） */
+export interface HourlyStatsPoint {
+  hour: string;
+  errors: number;
+  resourceErrors: number;
+  apiErrors: number;
+  blankScreens: number;
+  notFound404: number;
+  otherIssues: number;
+  pv: number;
+  uv: number;
+  clicks: number;
+  avgStay: number;
 }
 
 export interface StatsResponse {
@@ -63,6 +82,11 @@ export interface StatsResponse {
     lcp: PerfMetricSummary;
     load: PerfMetricSummary;
     domReady: PerfMetricSummary;
+    ttfb: PerfMetricSummary;
+    spaLcp: PerfMetricSummary;
+    overBudget: number;
+    maxMetricMs: number;
+    note?: string;
   };
   behavior: {
     pv: number;
@@ -72,13 +96,17 @@ export interface StatsResponse {
   };
   daily: DailyPoint[];
   hourly: HourlyPoint[];
+  /** 行为/稳定性小时趋势（聚合表） */
+  hourlyStats: HourlyStatsPoint[];
   perfByUrl: {
     fcp: PerfUrlRow[];
     lcp: PerfUrlRow[];
     load: PerfUrlRow[];
     domReady: PerfUrlRow[];
+    ttfb: PerfUrlRow[];
+    spaLcp: PerfUrlRow[];
   };
-  /** 按日页面 PV：Top10 / Bottom3 */
+  /** 按日页面 PV：Top20 / Bottom20（可配 PV_TOP_N / PV_BOTTOM_N） */
   pvPagesByDay: PvPagesDay[];
 }
 
@@ -96,6 +124,11 @@ export interface DailyPoint {
   lcp: number;
   load: number;
   domReady: number;
+  ttfb: number;
+  spaLcp: number;
+  fcpP50: number;
+  lcpP50: number;
+  loadP50: number;
   avgStay: number;
   clicks: number;
 }

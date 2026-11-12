@@ -6,6 +6,7 @@ import { CombinedTrendChart } from '@/components/CombinedTrendChart';
 import { PvPagesList } from '@/components/PvPagesList';
 import { useFilters } from '@/hooks/useFilters';
 import { useFilterStore } from '@/stores/filterStore';
+import { fillHourlyStatsRange } from '@/lib/normalizeStats';
 
 /** ms → 分钟，保留 1 位小数 */
 function msToMinutes(ms: number) {
@@ -13,18 +14,40 @@ function msToMinutes(ms: number) {
   return Math.round((ms / 60000) * 10) / 10;
 }
 
+const BEHAVIOR_SERIES = [
+  { name: 'PV', field: 'pv' as const },
+  { name: 'UV', field: 'uv' as const },
+  { name: '点击次数', field: 'clicks' as const },
+  {
+    name: '平均停留',
+    field: 'avgStay' as const,
+    yAxisIndex: 1 as const,
+    unit: 'min',
+    yAxisName: '时长(min)',
+    precision: 1,
+    transform: msToMinutes,
+  },
+];
+
 export function BehaviorDashboard() {
   const { stats, loading } = useFilters();
   const dateRange = useFilterStore((s) => s.dateRange);
   const rangeStart = dateRange[0].startOf('day');
   const rangeEnd = dateRange[1].startOf('day');
   const [pageDay, setPageDay] = useState<Dayjs>(() => rangeEnd);
+  const [hourlyDay, setHourlyDay] = useState<Dayjs>(() => rangeEnd);
 
   const clampedPageDay = useMemo(() => {
     if (pageDay.isBefore(rangeStart, 'day')) return rangeStart;
     if (pageDay.isAfter(rangeEnd, 'day')) return rangeEnd;
     return pageDay;
   }, [pageDay, rangeStart, rangeEnd]);
+
+  const clampedHourlyDay = useMemo(() => {
+    if (hourlyDay.isBefore(rangeStart, 'day')) return rangeStart;
+    if (hourlyDay.isAfter(rangeEnd, 'day')) return rangeEnd;
+    return hourlyDay;
+  }, [hourlyDay, rangeStart, rangeEnd]);
 
   const behavior = stats?.behavior;
   const daily = stats?.daily || [];
@@ -39,6 +62,14 @@ export function BehaviorDashboard() {
       }
     );
   }, [stats?.pvPagesByDay, clampedPageDay]);
+
+  const hourlyOfDay = useMemo(() => {
+    const filled = fillHourlyStatsRange(stats?.hourlyStats, clampedHourlyDay);
+    return filled.map((point) => ({
+      ...point,
+      hour: point.hour.slice(11, 16) || point.hour,
+    }));
+  }, [stats?.hourlyStats, clampedHourlyDay]);
 
   return (
     <div className="monitor-page">
@@ -74,24 +105,35 @@ export function BehaviorDashboard() {
         ]}
       />
       <CombinedTrendChart
-        title="行为趋势"
+        title="行为趋势（按天）"
         data={daily}
         xField="date"
         loading={loading}
-        series={[
-          { name: 'PV', field: 'pv' },
-          { name: 'UV', field: 'uv' },
-          { name: '点击次数', field: 'clicks' },
-          {
-            name: '平均停留',
-            field: 'avgStay',
-            yAxisIndex: 1,
-            unit: 'min',
-            yAxisName: '时长(min)',
-            precision: 1,
-            transform: msToMinutes,
-          },
-        ]}
+        series={BEHAVIOR_SERIES}
+      />
+
+      <CombinedTrendChart
+        title="行为趋势（按小时）"
+        data={hourlyOfDay}
+        xField="hour"
+        loading={loading}
+        series={BEHAVIOR_SERIES}
+        extra={
+          <DatePicker
+            value={clampedHourlyDay}
+            allowClear={false}
+            disabledDate={(current) => {
+              if (!current) return false;
+              return (
+                current.isBefore(rangeStart, 'day') ||
+                current.isAfter(rangeEnd, 'day')
+              );
+            }}
+            onChange={(value) => {
+              if (value) setHourlyDay(value.startOf('day'));
+            }}
+          />
+        }
       />
 
       <Space
@@ -100,7 +142,7 @@ export function BehaviorDashboard() {
         wrap
       >
         <Typography.Text type="secondary">
-          按日页面访问排行（当天有访问的页面；最高 Top 10 / 最低 3）
+          按日页面访问排行（当天有访问的页面；最高 Top 20 / 最低 Bottom 20）
         </Typography.Text>
         <DatePicker
           value={clampedPageDay}
@@ -119,13 +161,13 @@ export function BehaviorDashboard() {
       </Space>
 
       <PvPagesList
-        title="访问量最高页面 Top 10"
+        title="访问量最高页面 Top 20"
         data={dayPages.top}
         loading={loading}
         sort="descend"
       />
       <PvPagesList
-        title="访问量最低页面 Bottom 3"
+        title="访问量最低页面 Bottom 20"
         data={dayPages.bottom}
         loading={loading}
         sort="ascend"

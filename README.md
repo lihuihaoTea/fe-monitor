@@ -147,7 +147,8 @@ monitor.track("button_click", {
 - ✅ LCP (Largest Contentful Paint)
 - ✅ 页面加载时间
 - ✅ DOM Ready 时间
-- ✅ DNS/TCP/TTFB 时间
+- ✅ DNS/TCP/TTFB 时间（随 load 上报；看板主指标见性能页）
+- 📐 计算口径与已知限制：[`PERFORMANCE.md`](PERFORMANCE.md)
 
 ### 3. 用户行为
 

@@ -1,7 +1,7 @@
 # fe-monitor 数据库设计文档
 
 > 本文档供开发 Agent 使用，描述当前 PostgreSQL 数据库的表结构、索引、约束及业务逻辑。
-> 最后更新：2026-09-30（行为 PV URL Top10/Bottom3 + behavior/performance TTL）
+> 最后更新：2026-11-12（小时行为/稳定性聚合 + PV Top/Bottom 20 + 明细双 TTL 清理）
 
 ## 连接信息
 
@@ -27,8 +27,10 @@ DATABASE_URL=postgresql://monitor:monitor@localhost:5432/fe_monitor
 | `event_daily_error_types` | 按 app×日×子类型 | 小 | 按日聚合的错误子类型计数 |
 | `event_daily_visitors` | ~3.1万 | 2 MB | 按日去重访客记录 |
 | `event_hourly_perf` | 按 app×小时×指标 | 小 | 性能小时聚合（一天内趋势） |
+| `event_hourly_stats` | 按 app×小时 | 小 | 行为 + 稳定性小时聚合（一天内趋势） |
+| `event_hourly_visitors` | 按 app×小时×访客 | 中 | 小时 UV 去重 |
 | `event_daily_perf_urls` | 按 app×日×指标×URL | 中 | 性能按 URL 日聚合（Top N 下钻） |
-| `event_daily_pv_urls` | 按 app×日×URL | 中 | 行为按 URL 日 PV（Top10 / Bottom3） |
+| `event_daily_pv_urls` | 按 app×日×URL | 中 | 行为按 URL 日 PV（Top20 / Bottom20） |
 
 ---
 
@@ -148,10 +150,14 @@ pnpm db:filters -- remove --id <id>
 | load_min / load_max | bigint | NULL | Load 当日最小/最大 |
 | dom_ready_sum / dom_ready_count | bigint/int | 0 | DOM Ready 总和/计数 |
 | dom_ready_min / dom_ready_max | bigint | NULL | DOM Ready 当日最小/最大 |
+| ttfb_sum / ttfb_count / min / max | bigint/int | 0/NULL | TTFB（来自 load.data.ttfb） |
+| spa_lcp_sum / spa_lcp_count / min / max | bigint/int | 0/NULL | SPA 路由级 LCP |
+| perf_over_budget | integer | 0 | 超 `PERF_MAX_METRIC_MS`（默认 60s）丢弃次数 |
 
 - **主键**: `(app_id, date)`
 - **索引**: `idx_daily_stats_date (date)` — 按日期范围查询
 - **区间汇总**：`SUM(sum)/SUM(count)` 得平均；`MIN(min)` / `MAX(max)` 得区间极值
+- **P50**：Stats API 对 TTL 内 `events` 明细做 `percentile_cont(0.5)`，不落日表
 
 #### 重建命令
 
@@ -159,7 +165,7 @@ pnpm db:filters -- remove --id <id>
 pnpm db:rebuild-daily    # 全量重建（事务+锁表，防并发冲突）
 ```
 
-> ⚠️ 重建会 TRUNCATE **全部聚合表**（日统计、错误类型、访客、小时性能、URL 性能）后重新 INSERT，执行期间阻塞所有写入。
+> ⚠️ 重建会 TRUNCATE **全部聚合表**（日统计、错误类型、访客、小时性能/行为稳定性、URL 性能/PV）后重新 INSERT，执行期间阻塞所有写入。
 
 ---
 
@@ -235,8 +241,44 @@ pnpm db:rebuild-daily    # 全量重建（事务+锁表，防并发冲突）
 
 - **主键**: `(app_id, date, url)`
 - **索引**: `idx_daily_pv_urls_lookup (app_id, date)`
-- **Stats API**: 按日窗口函数取访问量最高 Top 10、最低 Bottom 3（仅 `pv > 0`）；`PV_TOP_N` / `PV_BOTTOM_N` 可配
+- **Stats API**: 按日窗口函数取访问量最高 Top 20、最低 Bottom 20（仅 `pv > 0`）；`PV_TOP_N` / `PV_BOTTOM_N` 可配
 - **写入**: `behavior/pv` rollup 时 UPSERT `pv = pv + 1`；URL 经 `normalizePageUrl`（去掉 search 与 `#/path?query` 中的 query，保留 hash 路由）
+
+---
+
+### 9. event_hourly_stats（行为 + 稳定性小时聚合）
+
+| 列名 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| app_id | text | - | 应用 ID |
+| hour_start | timestamp | - | 本地时区整点（无时区） |
+| js_errors | int | 0 | JS/Promise 错误 |
+| resource_errors | int | 0 | 资源失败 |
+| api_errors | int | 0 | API 失败 |
+| blank_screens | int | 0 | 白屏 |
+| not_found_404 | int | 0 | 404 |
+| other_issues | int | 0 | 其他（manual 等） |
+| pv | int | 0 | 页面 PV |
+| clicks | int | 0 | 点击次数 |
+| stay_duration_sum | bigint | 0 | 停留时长总和（ms） |
+| stay_count | int | 0 | 停留样本数 |
+
+- **主键**: `(app_id, hour_start)`
+- **索引**: `idx_hourly_stats_app_hour (app_id, hour_start)`
+- **用途**: 行为/稳定性看板「选中单日」时按小时画趋势；与日聚合同事务增量 UPSERT
+- **Stats API**: 返回 `hourlyStats`（含小时 UV，见下表）
+
+### 10. event_hourly_visitors（小时去重访客）
+
+| 列名 | 类型 | 说明 |
+|------|------|------|
+| app_id | text | 应用 ID |
+| hour_start | timestamp | 本地时区整点 |
+| visitor_id | text | 访客 ID |
+
+- **主键**: `(app_id, hour_start, visitor_id)`
+- **索引**: `idx_hourly_visitors_app_hour (app_id, hour_start)`
+- **用途**: 小时 UV；`behavior/pv` rollup 时 INSERT … ON CONFLICT DO NOTHING
 
 ---
 
@@ -262,13 +304,13 @@ pnpm db:rebuild-daily                  # 重建聚合数据
 ```
 
 ### 3. rebuild-daily 必须在事务中执行
-`TRUNCATE` + `INSERT` 必须在同一事务内完成并加 `ACCESS EXCLUSIVE` 锁，否则 PM2 并发写入会导致主键冲突。已封装在 `withTransaction` 中，**不要拆分为独立 execute() 调用**。锁表范围含 `event_hourly_perf`、`event_daily_perf_urls`、`event_daily_pv_urls`。
+`TRUNCATE` + `INSERT` 必须在同一事务内完成并加 `ACCESS EXCLUSIVE` 锁，否则 PM2 并发写入会导致主键冲突。已封装在 `withTransaction` 中，**不要拆分为独立 execute() 调用**。锁表范围含 `event_hourly_perf`、`event_hourly_stats`、`event_hourly_visitors`、`event_daily_perf_urls`、`event_daily_pv_urls`。
 
 ### 4. clean-filtered 采用分批处理
 每批读取 1000 条（基于 id 游标分页），避免 895MB 大表全量加载导致 OOM。
 
 ### 5. initDB 包含建表和种子数据
-`initDB()` 会自动 CREATE TABLE IF NOT EXISTS、ALTER 补齐性能 min/max 列，并插入默认过滤规则。若存在 events 但日聚合 / 小时聚合 / PV URL 聚合为空，会自动 `rebuildDailyStats()`。
+`initDB()` 会自动 CREATE TABLE IF NOT EXISTS、ALTER 补齐性能 min/max 列，并插入默认过滤规则。若存在 events 但日聚合 / 小时性能 / 小时行为稳定性 / PV URL 聚合为空，会自动 `rebuildDailyStats()`。
 
 ### 6. 事件类型枚举
 | type | sub_type 可选值 | 说明 |
@@ -278,7 +320,7 @@ pnpm db:rebuild-daily                  # 重建聚合数据
 | resource | - | 资源加载失败 |
 | behavior | pv, stay | 用户行为 |
 | performance | fcp, lcp, load | 性能指标（domReady 嵌在 load.data） |
-| blank | - | 白屏检测 |
+| blank | no-visible-content / no-root | 白屏检测（SDK 多次抽检挂载点 + 视口中心） |
 
 ### 7. 性能看板读路径
 - 汇总 avg/min/max：`event_daily_stats`
@@ -286,17 +328,27 @@ pnpm db:rebuild-daily                  # 重建聚合数据
 - 单日趋势：`event_hourly_perf`
 - 慢页面 Top N：`event_daily_perf_urls`
 - 不再依赖 `events` 明细列表展示性能采样（明细仍可上报入库，供 rebuild）
+- **样本有效区间**：`0 < value ≤ 60000` ms（FCP/LCP/Load/domReady）。长驻 SPA / Soft Navigation 下 `startTime` 可达数天，会把 **AVG** 拉爆；SDK 上报与 `extractPerfSamples` / `rebuildDailyStats` 均丢弃超限样本。修复历史看板需在服务端部署后执行 `pnpm db:rebuild-daily`。
+- **采集公式、口径差异与已知缺口**：见根目录 [`PERFORMANCE.md`](PERFORMANCE.md)。
 
-### 8. 行为看板页面排行
-- 日总 PV/UV/点击/停留：`event_daily_stats` + `event_daily_visitors`
-- 按日 Top10 / Bottom3：`event_daily_pv_urls`（API 字段 `pvPagesByDay`）
+### 8. 行为 / 稳定性看板读路径
+- 日总 PV/UV/点击/停留与稳定性计数：`event_daily_stats` + `event_daily_visitors`
+- 单日按小时趋势：`event_hourly_stats` + `event_hourly_visitors`（API 字段 `hourlyStats`）
+- 按日页面 PV Top20 / Bottom20：`event_daily_pv_urls`（API 字段 `pvPagesByDay`；`PV_TOP_N` / `PV_BOTTOM_N` 默认 20）
 
-### 9. behavior / performance 明细 TTL
-看板读路径已不依赖这两类明细。服务启动后按 `EVENTS_TTL_DAYS`（默认 **7**）定时删除 `type IN ('behavior','performance')` 且 `created_at` 超期的行；设为 `0` 关闭。也可手动：
+### 9. 原始事件明细 TTL（定时清理）
+看板趋势已读聚合表，明细仅服务列表 / P50 / rebuild。服务启动后 **1 分钟** 跑一次，之后 **每 6 小时**：
+
+| 环境变量 | 默认 | 清理类型 |
+|----------|------|----------|
+| `EVENTS_TTL_DAYS` | **7** | `behavior` / `performance` |
+| `EVENTS_DETAIL_TTL_DAYS` | **30** | `error` / `api` / `resource` / `blank` |
+
+任一设为 `0` 则关闭该类清理。也可手动：
 
 ```bash
 pnpm db:prune-events -- --dry-run
 pnpm db:prune-events
 ```
 
-> ⚠️ TTL 后超出窗口的 behavior/performance **无法再 rebuild**；error/api/resource/blank 明细默认保留。
+> ⚠️ TTL 后超出窗口的明细 **无法再 rebuild** 对应区间；部署新小时聚合后需先 `pnpm db:rebuild-daily` 再依赖 TTL。

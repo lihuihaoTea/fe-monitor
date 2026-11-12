@@ -27,17 +27,21 @@ app.get('/health', (_req, res) => {
 
 function scheduleEventPrune() {
   const ttlDays = Number(process.env.EVENTS_TTL_DAYS ?? 7);
-  if (!Number.isFinite(ttlDays) || ttlDays <= 0) {
-    console.log('[prune] EVENTS_TTL_DAYS<=0，未启用明细 TTL');
+  const detailTtlDays = Number(process.env.EVENTS_DETAIL_TTL_DAYS ?? 30);
+  const aggOn = Number.isFinite(ttlDays) && ttlDays > 0;
+  const detailOn = Number.isFinite(detailTtlDays) && detailTtlDays > 0;
+  if (!aggOn && !detailOn) {
+    console.log('[prune] TTL 均未启用（EVENTS_TTL_DAYS / EVENTS_DETAIL_TTL_DAYS）');
     return;
   }
 
   const run = async () => {
     try {
-      const result = await pruneExpiredEvents({ ttlDays });
+      const result = await pruneExpiredEvents({ ttlDays, detailTtlDays });
       if (result.total > 0) {
         console.log(
-          `[prune] TTL=${ttlDays}d 删除 behavior/performance ${result.deleted}/${result.total}`
+          `[prune] 删除 ${result.deleted}/${result.total}` +
+            `（behavior/performance≤${ttlDays}d；error/api/resource/blank≤${detailTtlDays}d）`
         );
       }
     } catch (err) {
@@ -45,14 +49,17 @@ function scheduleEventPrune() {
     }
   };
 
-  // 启动后 1 分钟跑一次，之后每 24 小时
+  // 启动后 1 分钟跑一次，之后每 6 小时
   setTimeout(() => {
     void run();
   }, 60_000);
   setInterval(() => {
     void run();
-  }, 24 * 60 * 60 * 1000);
-  console.log(`[prune] 已启用，保留 behavior/performance ${ttlDays} 天`);
+  }, 6 * 60 * 60 * 1000);
+  console.log(
+    `[prune] 已启用：behavior/performance ${aggOn ? `${ttlDays}d` : '关'}；` +
+      `error/api/resource/blank ${detailOn ? `${detailTtlDays}d` : '关'}；间隔 6h`
+  );
 }
 
 async function main() {

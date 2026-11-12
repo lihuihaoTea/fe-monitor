@@ -31,6 +31,16 @@ export interface MonitorConfig {
     behavior?: boolean;
   };
   assetGuard?: AssetGuardConfig;
+  /**
+   * 性能样本上限（ms），默认 60000。
+   * 超过则丢弃并上报 subType=over_budget，避免长驻 SPA 极值拉爆 AVG。
+   */
+  maxPerfMetricMs?: number;
+  /**
+   * 是否采集 SPA 路由级 spa_lcp（hash/history 切换后相对耗时）。
+   * 默认 true；与 Document 级 lcp 分开展示。
+   */
+  spaPerfMetrics?: boolean;
 }
 
 /** 登录后标记的用户信息，会附带到后续上报事件的 data.user */

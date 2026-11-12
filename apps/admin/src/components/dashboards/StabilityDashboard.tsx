@@ -1,15 +1,46 @@
-import { Card, Table } from 'antd';
+import { useMemo, useState } from 'react';
+import { Card, DatePicker, Table } from 'antd';
+import type { Dayjs } from 'dayjs';
 import { MetricSummary } from '@/components/MetricSummary';
 import { CombinedTrendChart } from '@/components/CombinedTrendChart';
 import { LatestErrorList } from '@/components/LatestErrorList';
 import { useFilters } from '@/hooks/useFilters';
+import { useFilterStore } from '@/stores/filterStore';
+import { fillHourlyStatsRange } from '@/lib/normalizeStats';
 import { formatNumber } from '@/lib/format';
+
+const STABILITY_SERIES = [
+  { name: 'JS 错误', field: 'errors' as const },
+  { name: '资源失败', field: 'resourceErrors' as const },
+  { name: 'API 失败', field: 'apiErrors' as const },
+  { name: '白屏', field: 'blankScreens' as const },
+  { name: '其他问题', field: 'otherIssues' as const },
+];
 
 export function StabilityDashboard() {
   const { stats, loading } = useFilters();
+  const dateRange = useFilterStore((s) => s.dateRange);
+  const rangeStart = dateRange[0].startOf('day');
+  const rangeEnd = dateRange[1].startOf('day');
+  const [hourlyDay, setHourlyDay] = useState<Dayjs>(() => rangeEnd);
+
   const errors = stats?.errors;
   const stability = stats?.stability;
   const daily = stats?.daily || [];
+
+  const clampedHourlyDay = useMemo(() => {
+    if (hourlyDay.isBefore(rangeStart, 'day')) return rangeStart;
+    if (hourlyDay.isAfter(rangeEnd, 'day')) return rangeEnd;
+    return hourlyDay;
+  }, [hourlyDay, rangeStart, rangeEnd]);
+
+  const hourlyOfDay = useMemo(() => {
+    const filled = fillHourlyStatsRange(stats?.hourlyStats, clampedHourlyDay);
+    return filled.map((point) => ({
+      ...point,
+      hour: point.hour.slice(11, 16) || point.hour,
+    }));
+  }, [stats?.hourlyStats, clampedHourlyDay]);
 
   return (
     <div className="monitor-page">
@@ -50,17 +81,35 @@ export function StabilityDashboard() {
       />
 
       <CombinedTrendChart
-        title="稳定性趋势"
+        title="稳定性趋势（按天）"
         data={daily}
         xField="date"
         loading={loading}
-        series={[
-          { name: 'JS 错误', field: 'errors' },
-          { name: '资源失败', field: 'resourceErrors' },
-          { name: 'API 失败', field: 'apiErrors' },
-          { name: '白屏', field: 'blankScreens' },
-          { name: '其他问题', field: 'otherIssues' },
-        ]}
+        series={STABILITY_SERIES}
+      />
+
+      <CombinedTrendChart
+        title="稳定性趋势（按小时）"
+        data={hourlyOfDay}
+        xField="hour"
+        loading={loading}
+        series={STABILITY_SERIES}
+        extra={
+          <DatePicker
+            value={clampedHourlyDay}
+            allowClear={false}
+            disabledDate={(current) => {
+              if (!current) return false;
+              return (
+                current.isBefore(rangeStart, 'day') ||
+                current.isAfter(rangeEnd, 'day')
+              );
+            }}
+            onChange={(value) => {
+              if (value) setHourlyDay(value.startOf('day'));
+            }}
+          />
+        }
       />
 
       <LatestErrorList title="JS 错误" category="js" />
