@@ -1,4 +1,12 @@
 import { clientQuery, withTransaction } from './index.js';
+/**
+ * 与 SDK 一致：丢弃超长样本（长驻 SPA / Soft Navigation 下 startTime 可达数天，
+ * 会把 AVG 拉爆）。可用环境变量 PERF_MAX_METRIC_MS 覆盖（毫秒）。
+ */
+export const MAX_PERF_METRIC_MS = (() => {
+    const n = Number(process.env.PERF_MAX_METRIC_MS);
+    return Number.isFinite(n) && n > 0 ? n : 60000;
+})();
 /** 与 Node 进程本地时区一致的 YYYY-MM-DD */
 export function dayKeyFromMs(ms) {
     const d = new Date(ms);
@@ -15,6 +23,122 @@ export function hourKeyFromMs(ms) {
     const day = String(d.getDate()).padStart(2, '0');
     const h = String(d.getHours()).padStart(2, '0');
     return `${y}-${m}-${day} ${h}:00:00`;
+}
+function dayBoundsMs(day) {
+    const start = new Date(`${day}T00:00:00`).getTime();
+    const end = new Date(`${day}T23:59:59.999`).getTime();
+    return [start, end];
+}
+function hourBoundsMs(hour) {
+    const start = new Date(hour.replace(' ', 'T')).getTime();
+    return [start, start + 3600000 - 1];
+}
+function perfP50SampleSql() {
+    return `
+  SELECT sub_type as metric, (data->>'value')::float as v
+  FROM events
+  WHERE app_id = ?
+    AND type = 'performance'
+    AND sub_type IN ('fcp', 'lcp', 'load', 'spa_lcp')
+    AND timestamp >= ? AND timestamp <= ?
+    AND (data->>'value')::float > 0
+    AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
+  UNION ALL
+  SELECT 'dom_ready', (data->>'domReady')::float
+  FROM events
+  WHERE app_id = ?
+    AND type = 'performance' AND sub_type = 'load'
+    AND timestamp >= ? AND timestamp <= ?
+    AND (data->>'domReady')::float > 0
+    AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS}
+  UNION ALL
+  SELECT 'ttfb', (data->>'ttfb')::float
+  FROM events
+  WHERE app_id = ?
+    AND type = 'performance' AND sub_type = 'load'
+    AND timestamp >= ? AND timestamp <= ?
+    AND (data->>'ttfb')::float > 0
+    AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS}
+`;
+}
+/**
+ * 按日/小时窗口从仍保留的 performance 明细回填 P50 到聚合表。
+ * 仅写入路径调用；Stats 读路径不再扫 events。
+ */
+export async function refreshPerfP50Targets(client, targets) {
+    if (targets.length === 0)
+        return;
+    const dayKeys = new Map();
+    const hourKeys = new Map();
+    for (const t of targets) {
+        dayKeys.set(`${t.appId}|${t.day}`, { appId: t.appId, day: t.day });
+        hourKeys.set(`${t.appId}|${t.hour}`, { appId: t.appId, hour: t.hour });
+    }
+    const sampleSql = perfP50SampleSql();
+    for (const { appId, day } of dayKeys.values()) {
+        const [startMs, endMs] = dayBoundsMs(day);
+        const windowParams = [
+            appId,
+            startMs,
+            endMs,
+            appId,
+            startMs,
+            endMs,
+            appId,
+            startMs,
+            endMs,
+        ];
+        await clientQuery(client, `UPDATE event_daily_stats AS d SET
+         fcp_p50 = a.fcp_p50,
+         lcp_p50 = a.lcp_p50,
+         load_p50 = a.load_p50,
+         dom_ready_p50 = a.dom_ready_p50,
+         ttfb_p50 = a.ttfb_p50,
+         spa_lcp_p50 = a.spa_lcp_p50
+       FROM (
+         WITH samples AS (${sampleSql}),
+         agg AS (
+           SELECT metric,
+             ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY v))::bigint as p50
+           FROM samples
+           GROUP BY metric
+         )
+         SELECT
+           (SELECT p50 FROM agg WHERE metric = 'fcp') as fcp_p50,
+           (SELECT p50 FROM agg WHERE metric = 'lcp') as lcp_p50,
+           (SELECT p50 FROM agg WHERE metric = 'load') as load_p50,
+           (SELECT p50 FROM agg WHERE metric = 'dom_ready') as dom_ready_p50,
+           (SELECT p50 FROM agg WHERE metric = 'ttfb') as ttfb_p50,
+           (SELECT p50 FROM agg WHERE metric = 'spa_lcp') as spa_lcp_p50
+       ) a
+       WHERE d.app_id = ? AND d.date = ?::date`, [...windowParams, appId, day]);
+    }
+    for (const { appId, hour } of hourKeys.values()) {
+        const [startMs, endMs] = hourBoundsMs(hour);
+        const windowParams = [
+            appId,
+            startMs,
+            endMs,
+            appId,
+            startMs,
+            endMs,
+            appId,
+            startMs,
+            endMs,
+        ];
+        await clientQuery(client, `UPDATE event_hourly_perf AS h SET
+         value_p50 = a.p50
+       FROM (
+         WITH samples AS (${sampleSql})
+         SELECT metric,
+           ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY v))::bigint as p50
+         FROM samples
+         GROUP BY metric
+       ) a
+       WHERE h.app_id = ?
+         AND h.hour_start = ?::timestamp
+         AND h.metric = a.metric`, [...windowParams, appId, hour]);
+    }
 }
 function emptyDelta() {
     return {
@@ -138,14 +262,6 @@ export function normalizePageUrl(raw) {
 }
 /** @deprecated 使用 normalizePageUrl */
 export const normalizePerfUrl = normalizePageUrl;
-/**
- * 与 SDK 一致：丢弃超长样本（长驻 SPA / Soft Navigation 下 startTime 可达数天，
- * 会把 AVG 拉爆）。可用环境变量 PERF_MAX_METRIC_MS 覆盖（毫秒）。
- */
-export const MAX_PERF_METRIC_MS = (() => {
-    const n = Number(process.env.PERF_MAX_METRIC_MS);
-    return Number.isFinite(n) && n > 0 ? n : 60000;
-})();
 export function isValidPerfMs(value) {
     return Number.isFinite(value) && value > 0 && value <= MAX_PERF_METRIC_MS;
 }
@@ -257,15 +373,15 @@ async function upsertHourlyAndUrl(client, event) {
     const url = normalizePerfUrl(event.url);
     for (const { metric, value } of samples) {
         await clientQuery(client, `INSERT INTO event_hourly_perf AS h (
-         app_id, hour_start, metric, value_sum, value_count, value_min, value_max
-       ) VALUES (?, ?::timestamp, ?, ?, 1, ?, ?)
+         app_id, hour_start, metric, value_sum, value_count, value_min, value_max, value_p50
+       ) VALUES (?, ?::timestamp, ?, ?, 1, ?, ?, ?)
        ON CONFLICT (app_id, hour_start, metric) DO UPDATE SET
          value_sum = h.value_sum + EXCLUDED.value_sum,
          value_count = h.value_count + EXCLUDED.value_count,
          value_min = CASE WHEN h.value_min IS NULL THEN EXCLUDED.value_min
            ELSE LEAST(h.value_min, EXCLUDED.value_min) END,
          value_max = CASE WHEN h.value_max IS NULL THEN EXCLUDED.value_max
-           ELSE GREATEST(h.value_max, EXCLUDED.value_max) END`, [event.appId, hour, metric, value, value, value]);
+           ELSE GREATEST(h.value_max, EXCLUDED.value_max) END`, [event.appId, hour, metric, value, value, value, value]);
         await clientQuery(client, `INSERT INTO event_daily_perf_urls AS u (
          app_id, date, metric, url, value_sum, value_count, value_min, value_max
        ) VALUES (?, ?::date, ?, ?, ?, 1, ?, ?)
@@ -278,7 +394,7 @@ async function upsertHourlyAndUrl(client, event) {
            ELSE GREATEST(u.value_max, EXCLUDED.value_max) END`, [event.appId, date, metric, url, value, value, value]);
     }
 }
-export async function applyRollupWithClient(client, event) {
+export async function applyRollupWithClient(client, event, options) {
     const date = dayKeyFromMs(event.timestamp);
     const { delta, errorSubType, trackVisitor } = buildDailyDelta(event);
     await clientQuery(client, `INSERT INTO event_daily_stats AS s (
@@ -436,6 +552,13 @@ export async function applyRollupWithClient(client, event) {
     }
     await upsertHourlyStats(client, event, delta, trackVisitor);
     await upsertHourlyAndUrl(client, event);
+    if (options?.p50Targets && extractPerfSamples(event).length > 0) {
+        options.p50Targets.push({
+            appId: event.appId,
+            day: date,
+            hour: hourKeyFromMs(event.timestamp),
+        });
+    }
 }
 /** 行为 + 稳定性小时聚合（供看板小时趋势，读路径不依赖明细） */
 async function upsertHourlyStats(client, event, delta, trackVisitor) {
@@ -558,6 +681,7 @@ export async function rebuildDailyStats() {
         dom_ready_sum, dom_ready_count, dom_ready_min, dom_ready_max,
         ttfb_sum, ttfb_count, ttfb_min, ttfb_max,
         spa_lcp_sum, spa_lcp_count, spa_lcp_min, spa_lcp_max,
+        fcp_p50, lcp_p50, load_p50, dom_ready_p50, ttfb_p50, spa_lcp_p50,
         perf_over_budget
       )
       SELECT
@@ -646,6 +770,30 @@ export async function rebuildDailyStats() {
           AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
         MAX((data->>'value')::bigint) FILTER (WHERE type = 'performance' AND sub_type = 'spa_lcp'
           AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}),
+        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float) FILTER (
+          WHERE type = 'performance' AND sub_type = 'fcp'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
+        ))::bigint,
+        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float) FILTER (
+          WHERE type = 'performance' AND sub_type = 'lcp'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
+        ))::bigint,
+        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float) FILTER (
+          WHERE type = 'performance' AND sub_type = 'load'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
+        ))::bigint,
+        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'domReady')::float) FILTER (
+          WHERE type = 'performance' AND sub_type = 'load'
+            AND (data->>'domReady')::float > 0 AND (data->>'domReady')::float <= ${MAX_PERF_METRIC_MS}
+        ))::bigint,
+        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'ttfb')::float) FILTER (
+          WHERE type = 'performance' AND sub_type = 'load'
+            AND (data->>'ttfb')::float > 0 AND (data->>'ttfb')::float <= ${MAX_PERF_METRIC_MS}
+        ))::bigint,
+        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float) FILTER (
+          WHERE type = 'performance' AND sub_type = 'spa_lcp'
+            AND (data->>'value')::float > 0 AND (data->>'value')::float <= ${MAX_PERF_METRIC_MS}
+        ))::bigint,
         (
           COUNT(*) FILTER (WHERE type = 'performance' AND sub_type = 'over_budget')
           + COUNT(*) FILTER (
@@ -682,7 +830,7 @@ export async function rebuildDailyStats() {
         // 小时聚合：fcp / lcp / load
         await clientQuery(client, `
       INSERT INTO event_hourly_perf (
-        app_id, hour_start, metric, value_sum, value_count, value_min, value_max
+        app_id, hour_start, metric, value_sum, value_count, value_min, value_max, value_p50
       )
       SELECT
         app_id,
@@ -691,7 +839,8 @@ export async function rebuildDailyStats() {
         COALESCE(SUM((data->>'value')::bigint), 0)::bigint,
         COUNT(*)::int,
         MIN((data->>'value')::bigint),
-        MAX((data->>'value')::bigint)
+        MAX((data->>'value')::bigint),
+        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float))::bigint
       FROM events
       WHERE type = 'performance' AND sub_type IN ('fcp', 'lcp', 'load', 'spa_lcp')
         AND (data->>'value')::float > 0
@@ -701,7 +850,7 @@ export async function rebuildDailyStats() {
         // 小时聚合：dom_ready / ttfb（嵌在 load）
         await clientQuery(client, `
       INSERT INTO event_hourly_perf (
-        app_id, hour_start, metric, value_sum, value_count, value_min, value_max
+        app_id, hour_start, metric, value_sum, value_count, value_min, value_max, value_p50
       )
       SELECT
         app_id,
@@ -710,7 +859,8 @@ export async function rebuildDailyStats() {
         COALESCE(SUM((data->>'domReady')::bigint), 0)::bigint,
         COUNT(*)::int,
         MIN((data->>'domReady')::bigint),
-        MAX((data->>'domReady')::bigint)
+        MAX((data->>'domReady')::bigint),
+        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'domReady')::float))::bigint
       FROM events
       WHERE type = 'performance' AND sub_type = 'load'
         AND (data->>'domReady')::float > 0
@@ -719,7 +869,7 @@ export async function rebuildDailyStats() {
     `, []);
         await clientQuery(client, `
       INSERT INTO event_hourly_perf (
-        app_id, hour_start, metric, value_sum, value_count, value_min, value_max
+        app_id, hour_start, metric, value_sum, value_count, value_min, value_max, value_p50
       )
       SELECT
         app_id,
@@ -728,7 +878,8 @@ export async function rebuildDailyStats() {
         COALESCE(SUM((data->>'ttfb')::bigint), 0)::bigint,
         COUNT(*)::int,
         MIN((data->>'ttfb')::bigint),
-        MAX((data->>'ttfb')::bigint)
+        MAX((data->>'ttfb')::bigint),
+        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'ttfb')::float))::bigint
       FROM events
       WHERE type = 'performance' AND sub_type = 'load'
         AND (data->>'ttfb')::float > 0

@@ -61,9 +61,7 @@ statsRouter.get('/', async (req, res) => {
         const dayParams = [appId, startDay, endDay];
         const hourStart = `${startDay} 00:00:00`;
         const hourEnd = `${endDay} 23:59:59`;
-        const startMs = new Date(`${startDay}T00:00:00`).getTime();
-        const endMs = new Date(`${endDay}T23:59:59.999`).getTime();
-        const [summary, errorTypes, uvRow, dailyRows, hourlyRows, hourlyStatsRows, urlRows, pvUrlRows, p50Rows, dailyP50Rows,] = await Promise.all([
+        const [summary, errorTypes, uvRow, dailyRows, hourlyRows, hourlyStatsRows, urlRows, pvUrlRows,] = await Promise.all([
             queryOne(`SELECT
              COALESCE(SUM(js_errors), 0)::int as js_errors,
              COALESCE(SUM(resource_errors), 0)::int as resource_errors,
@@ -99,6 +97,24 @@ statsRouter.get('/', async (req, res) => {
              COALESCE(SUM(spa_lcp_count), 0)::int as spa_lcp_count,
              MIN(spa_lcp_min) as spa_lcp_min,
              MAX(spa_lcp_max) as spa_lcp_max,
+             CASE WHEN SUM(fcp_count) FILTER (WHERE fcp_p50 IS NOT NULL) > 0
+               THEN ROUND(SUM(fcp_p50::numeric * fcp_count) FILTER (WHERE fcp_p50 IS NOT NULL)
+                 / SUM(fcp_count) FILTER (WHERE fcp_p50 IS NOT NULL)) END as fcp_p50,
+             CASE WHEN SUM(lcp_count) FILTER (WHERE lcp_p50 IS NOT NULL) > 0
+               THEN ROUND(SUM(lcp_p50::numeric * lcp_count) FILTER (WHERE lcp_p50 IS NOT NULL)
+                 / SUM(lcp_count) FILTER (WHERE lcp_p50 IS NOT NULL)) END as lcp_p50,
+             CASE WHEN SUM(load_count) FILTER (WHERE load_p50 IS NOT NULL) > 0
+               THEN ROUND(SUM(load_p50::numeric * load_count) FILTER (WHERE load_p50 IS NOT NULL)
+                 / SUM(load_count) FILTER (WHERE load_p50 IS NOT NULL)) END as load_p50,
+             CASE WHEN SUM(dom_ready_count) FILTER (WHERE dom_ready_p50 IS NOT NULL) > 0
+               THEN ROUND(SUM(dom_ready_p50::numeric * dom_ready_count) FILTER (WHERE dom_ready_p50 IS NOT NULL)
+                 / SUM(dom_ready_count) FILTER (WHERE dom_ready_p50 IS NOT NULL)) END as dom_ready_p50,
+             CASE WHEN SUM(ttfb_count) FILTER (WHERE ttfb_p50 IS NOT NULL) > 0
+               THEN ROUND(SUM(ttfb_p50::numeric * ttfb_count) FILTER (WHERE ttfb_p50 IS NOT NULL)
+                 / SUM(ttfb_count) FILTER (WHERE ttfb_p50 IS NOT NULL)) END as ttfb_p50,
+             CASE WHEN SUM(spa_lcp_count) FILTER (WHERE spa_lcp_p50 IS NOT NULL) > 0
+               THEN ROUND(SUM(spa_lcp_p50::numeric * spa_lcp_count) FILTER (WHERE spa_lcp_p50 IS NOT NULL)
+                 / SUM(spa_lcp_count) FILTER (WHERE spa_lcp_p50 IS NOT NULL)) END as spa_lcp_p50,
              COALESCE(SUM(perf_over_budget), 0)::int as perf_over_budget
            FROM event_daily_stats
            WHERE app_id = ? AND date >= ?::date AND date <= ?::date`, dayParams),
@@ -138,6 +154,12 @@ statsRouter.get('/', async (req, res) => {
              CASE WHEN s.spa_lcp_count > 0
                THEN ROUND(s.spa_lcp_sum::numeric / s.spa_lcp_count)
                ELSE 0 END as spa_lcp,
+             COALESCE(s.fcp_p50, 0)::bigint as fcp_p50,
+             COALESCE(s.lcp_p50, 0)::bigint as lcp_p50,
+             COALESCE(s.load_p50, 0)::bigint as load_p50,
+             COALESCE(s.dom_ready_p50, 0)::bigint as dom_ready_p50,
+             COALESCE(s.ttfb_p50, 0)::bigint as ttfb_p50,
+             COALESCE(s.spa_lcp_p50, 0)::bigint as spa_lcp_p50,
              COALESCE(v.uv, 0)::int as uv
            FROM event_daily_stats s
            LEFT JOIN (
@@ -153,7 +175,8 @@ statsRouter.get('/', async (req, res) => {
              to_char(hour_start, 'YYYY-MM-DD HH24:00') as hour_label,
              metric,
              CASE WHEN value_count > 0
-               THEN ROUND(value_sum::numeric / value_count) ELSE 0 END as avg_value
+               THEN ROUND(value_sum::numeric / value_count) ELSE 0 END as avg_value,
+             value_p50 as p50_value
            FROM event_hourly_perf
            WHERE app_id = ?
              AND hour_start >= ?::timestamp
@@ -227,91 +250,10 @@ statsRouter.get('/', async (req, res) => {
            FROM ranked
            WHERE rn_desc <= ? OR rn_asc <= ?
            ORDER BY date ASC, pv DESC`, [...dayParams, PV_TOP_N, PV_BOTTOM_N]),
-            // 区间 P50：基于仍在 TTL 内的明细（无明细则为空）
-            query(`SELECT metric, ROUND(p50)::bigint as p50 FROM (
-             SELECT 'fcp' as metric,
-               percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float) as p50
-             FROM events
-             WHERE app_id = ? AND type = 'performance' AND sub_type = 'fcp'
-               AND timestamp >= ? AND timestamp <= ?
-               AND (data->>'value')::float > 0
-               AND (data->>'value')::float <= ?
-             UNION ALL
-             SELECT 'lcp',
-               percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float)
-             FROM events
-             WHERE app_id = ? AND type = 'performance' AND sub_type = 'lcp'
-               AND timestamp >= ? AND timestamp <= ?
-               AND (data->>'value')::float > 0
-               AND (data->>'value')::float <= ?
-             UNION ALL
-             SELECT 'load',
-               percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float)
-             FROM events
-             WHERE app_id = ? AND type = 'performance' AND sub_type = 'load'
-               AND timestamp >= ? AND timestamp <= ?
-               AND (data->>'value')::float > 0
-               AND (data->>'value')::float <= ?
-             UNION ALL
-             SELECT 'dom_ready',
-               percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'domReady')::float)
-             FROM events
-             WHERE app_id = ? AND type = 'performance' AND sub_type = 'load'
-               AND timestamp >= ? AND timestamp <= ?
-               AND (data->>'domReady')::float > 0
-               AND (data->>'domReady')::float <= ?
-             UNION ALL
-             SELECT 'ttfb',
-               percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'ttfb')::float)
-             FROM events
-             WHERE app_id = ? AND type = 'performance' AND sub_type = 'load'
-               AND timestamp >= ? AND timestamp <= ?
-               AND (data->>'ttfb')::float > 0
-               AND (data->>'ttfb')::float <= ?
-             UNION ALL
-             SELECT 'spa_lcp',
-               percentile_cont(0.5) WITHIN GROUP (ORDER BY (data->>'value')::float)
-             FROM events
-             WHERE app_id = ? AND type = 'performance' AND sub_type = 'spa_lcp'
-               AND timestamp >= ? AND timestamp <= ?
-               AND (data->>'value')::float > 0
-               AND (data->>'value')::float <= ?
-           ) t`, [
-                appId, startMs, endMs, MAX_PERF_METRIC_MS,
-                appId, startMs, endMs, MAX_PERF_METRIC_MS,
-                appId, startMs, endMs, MAX_PERF_METRIC_MS,
-                appId, startMs, endMs, MAX_PERF_METRIC_MS,
-                appId, startMs, endMs, MAX_PERF_METRIC_MS,
-                appId, startMs, endMs, MAX_PERF_METRIC_MS,
-            ]),
-            query(`SELECT to_char(to_timestamp(timestamp / 1000.0), 'YYYY-MM-DD') as date,
-                  sub_type as metric,
-                  ROUND(percentile_cont(0.5) WITHIN GROUP (
-                    ORDER BY (data->>'value')::float
-                  ))::bigint as p50
-           FROM events
-           WHERE app_id = ? AND type = 'performance'
-             AND sub_type IN ('fcp', 'lcp', 'load', 'spa_lcp')
-             AND timestamp >= ? AND timestamp <= ?
-             AND (data->>'value')::float > 0
-             AND (data->>'value')::float <= ?
-           GROUP BY 1, 2`, [appId, startMs, endMs, MAX_PERF_METRIC_MS]),
         ]);
         const s = summary || {};
         const rowNum = (key) => n(s[key]);
         const rowMin = (key) => nOrNull(s[key]);
-        const p50Map = new Map();
-        for (const row of p50Rows) {
-            const v = nOrNull(row.p50);
-            if (v != null)
-                p50Map.set(row.metric, v);
-        }
-        const dailyP50Map = new Map();
-        for (const row of dailyP50Rows) {
-            const v = nOrNull(row.p50);
-            if (v != null)
-                dailyP50Map.set(`${row.date}|${row.metric}`, v);
-        }
         const daily = dailyRows.map((row) => ({
             date: row.date,
             pv: n(row.pv),
@@ -328,9 +270,9 @@ statsRouter.get('/', async (req, res) => {
             domReady: n(row.dom_ready ?? row.domReady),
             ttfb: n(row.ttfb),
             spaLcp: n(row.spa_lcp ?? row.spaLcp),
-            fcpP50: dailyP50Map.get(`${row.date}|fcp`) || 0,
-            lcpP50: dailyP50Map.get(`${row.date}|lcp`) || 0,
-            loadP50: dailyP50Map.get(`${row.date}|load`) || 0,
+            fcpP50: n(row.fcp_p50 ?? row.fcpP50),
+            lcpP50: n(row.lcp_p50 ?? row.lcpP50),
+            loadP50: n(row.load_p50 ?? row.loadP50),
             avgStay: n(row.avg_stay ?? row.avgStay),
             clicks: n(row.clicks),
         }));
@@ -348,16 +290,26 @@ statsRouter.get('/', async (req, res) => {
                     domReady: 0,
                     ttfb: 0,
                     spaLcp: 0,
+                    fcpP50: 0,
+                    lcpP50: 0,
+                    loadP50: 0,
                 };
                 hourlyMap.set(hour, point);
             }
             const value = n(row.avg_value);
-            if (row.metric === 'fcp')
+            const p50 = nOrNull(row.p50_value) ?? 0;
+            if (row.metric === 'fcp') {
                 point.fcp = value;
-            else if (row.metric === 'lcp')
+                point.fcpP50 = p50;
+            }
+            else if (row.metric === 'lcp') {
                 point.lcp = value;
-            else if (row.metric === 'load')
+                point.lcpP50 = p50;
+            }
+            else if (row.metric === 'load') {
                 point.load = value;
+                point.loadP50 = p50;
+            }
             else if (row.metric === 'dom_ready')
                 point.domReady = value;
             else if (row.metric === 'ttfb')
@@ -466,15 +418,15 @@ statsRouter.get('/', async (req, res) => {
                 otherIssues: rowNum('other_issues'),
             },
             performance: {
-                fcp: metricBlock(rowNum('fcp_sum'), rowNum('fcp_count'), rowMin('fcp_min'), rowMin('fcp_max'), p50Map.get('fcp')),
-                lcp: metricBlock(rowNum('lcp_sum'), rowNum('lcp_count'), rowMin('lcp_min'), rowMin('lcp_max'), p50Map.get('lcp')),
-                load: metricBlock(rowNum('load_sum'), rowNum('load_count'), rowMin('load_min'), rowMin('load_max'), p50Map.get('load')),
-                domReady: metricBlock(rowNum('dom_ready_sum'), rowNum('dom_ready_count'), rowMin('dom_ready_min'), rowMin('dom_ready_max'), p50Map.get('dom_ready')),
-                ttfb: metricBlock(rowNum('ttfb_sum'), rowNum('ttfb_count'), rowMin('ttfb_min'), rowMin('ttfb_max'), p50Map.get('ttfb')),
-                spaLcp: metricBlock(rowNum('spa_lcp_sum'), rowNum('spa_lcp_count'), rowMin('spa_lcp_min'), rowMin('spa_lcp_max'), p50Map.get('spa_lcp')),
+                fcp: metricBlock(rowNum('fcp_sum'), rowNum('fcp_count'), rowMin('fcp_min'), rowMin('fcp_max'), rowMin('fcp_p50')),
+                lcp: metricBlock(rowNum('lcp_sum'), rowNum('lcp_count'), rowMin('lcp_min'), rowMin('lcp_max'), rowMin('lcp_p50')),
+                load: metricBlock(rowNum('load_sum'), rowNum('load_count'), rowMin('load_min'), rowMin('load_max'), rowMin('load_p50')),
+                domReady: metricBlock(rowNum('dom_ready_sum'), rowNum('dom_ready_count'), rowMin('dom_ready_min'), rowMin('dom_ready_max'), rowMin('dom_ready_p50')),
+                ttfb: metricBlock(rowNum('ttfb_sum'), rowNum('ttfb_count'), rowMin('ttfb_min'), rowMin('ttfb_max'), rowMin('ttfb_p50')),
+                spaLcp: metricBlock(rowNum('spa_lcp_sum'), rowNum('spa_lcp_count'), rowMin('spa_lcp_min'), rowMin('spa_lcp_max'), rowMin('spa_lcp_p50')),
                 overBudget: rowNum('perf_over_budget'),
                 maxMetricMs: MAX_PERF_METRIC_MS,
-                note: '各指标样本集独立（count 可能不同）；P50 来自仍保留的 performance 明细（默认 TTL 7 天），无明细时为 0。',
+                note: '各指标样本集独立（count 可能不同）；P50 来自日/小时聚合表（单日精确；跨日按样本数加权近似）。',
             },
             behavior: {
                 pv: rowNum('pv'),

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { clientQuery, withTransaction } from '../db/index.js';
 import { shouldFilterEvent } from '../filters/eventFilters.js';
-import { applyRollupWithClient } from '../db/dailyStats.js';
+import { applyRollupWithClient, refreshPerfP50Targets, } from '../db/dailyStats.js';
 import { invalidateStatsCache } from './stats.js';
 export const reportRouter = Router();
 function isBot(userAgent) {
@@ -73,6 +73,7 @@ reportRouter.post('/', async (req, res) => {
         }
         if (toInsert.length > 0) {
             await withTransaction(async (client) => {
+                const p50Targets = [];
                 for (const row of toInsert) {
                     try {
                         await clientQuery(client, `INSERT INTO events (
@@ -99,7 +100,7 @@ reportRouter.post('/', async (req, res) => {
                             visitorId: row.visitorId,
                             url: row.url,
                             data: row.data,
-                        });
+                        }, { p50Targets });
                         inserted++;
                         touchedApps.add(row.appId);
                     }
@@ -107,6 +108,8 @@ reportRouter.post('/', async (req, res) => {
                         console.error('Insert error:', err);
                     }
                 }
+                // 批末按日/小时窗口回填 P50，避免读路径扫 events
+                await refreshPerfP50Targets(client, p50Targets);
             });
             for (const appId of touchedApps) {
                 invalidateStatsCache(appId);
