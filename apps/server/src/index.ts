@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import { initDB } from './db/index.js';
 import { pruneExpiredEvents } from './db/prune-events.js';
+import { requireAuth } from './middleware/auth.js';
+import { authRouter } from './routes/auth.js';
 import { reportRouter } from './routes/report.js';
 import { statsRouter } from './routes/stats.js';
 import { eventsRouter } from './routes/events.js';
@@ -17,9 +19,10 @@ app.use(
 );
 app.use(express.json());
 
+app.use('/api/auth', authRouter);
 app.use('/api/report', reportRouter);
-app.use('/api/stats', statsRouter);
-app.use('/api/events', eventsRouter);
+app.use('/api/stats', requireAuth, statsRouter);
+app.use('/api/events', requireAuth, eventsRouter);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: Date.now() });

@@ -178,6 +178,7 @@ monitor.track("button_click", {
 - React Router
 - Ant Design 6
 - ECharts（趋势图）
+- Token 登录（默认账号 `admin` / `123456`，暂不区分权限）
 
 ### 演示页面 (`apps/demo`)
 
@@ -228,10 +229,28 @@ Content-Type: application/json
 }
 ```
 
+### 登录（管理端）
+
+```
+POST /api/auth/login
+Content-Type: application/json
+
+{ "username": "admin", "password": "123456" }
+```
+
+返回 `{ token, user }`。之后访问 `/api/stats`、`/api/events` 需带：
+
+```
+Authorization: Bearer <token>
+```
+
+`/api/report` 与 `/health` 不要求登录。可用 `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `AUTH_SECRET` 覆盖默认账号与签名密钥。
+
 ### 统计查询
 
 ```
 GET /api/stats?appId=demo-app&startDate=2024-01-01&endDate=2024-01-31
+Authorization: Bearer <token>
 ```
 
 返回：

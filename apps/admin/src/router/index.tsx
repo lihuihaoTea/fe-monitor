@@ -1,16 +1,28 @@
 import { Navigate, createBrowserRouter } from 'react-router-dom';
 import { Providers } from '@/components/Providers';
+import { RequireAuth } from '@/components/RequireAuth';
 import { MainLayout } from '@/layouts/MainLayout';
+import { LoginPage } from '@/pages/LoginPage';
 import { StabilityDashboard } from '@/components/dashboards/StabilityDashboard';
 import { PerformanceDashboard } from '@/components/dashboards/PerformanceDashboard';
 import { BehaviorDashboard } from '@/components/dashboards/BehaviorDashboard';
 
 export const router = createBrowserRouter([
   {
+    path: '/login',
+    element: (
+      <Providers>
+        <LoginPage />
+      </Providers>
+    ),
+  },
+  {
     path: '/',
     element: (
       <Providers>
-        <MainLayout />
+        <RequireAuth>
+          <MainLayout />
+        </RequireAuth>
       </Providers>
     ),
     children: [

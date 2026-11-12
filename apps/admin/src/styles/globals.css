@@ -10,6 +10,25 @@ body,
   -moz-osx-font-smoothing: grayscale;
 }
 
+.login-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(22, 119, 255, 0.12), transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, rgba(250, 140, 22, 0.1), transparent 50%),
+    #f0f2f5;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 400px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.08);
+}
+
 /* 让 Router / ConfigProvider / AntApp 等中间层把高度传到布局 */
 #root,
 #root > *,

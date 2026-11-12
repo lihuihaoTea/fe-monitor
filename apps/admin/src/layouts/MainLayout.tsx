@@ -15,10 +15,12 @@ import {
   AlertOutlined,
   TeamOutlined,
   ReloadOutlined,
+  LogoutOutlined,
 } from "@ant-design/icons";
 import type { Dayjs } from "dayjs";
 import { APP_OPTIONS, APP_THEME_COLORS, type AppId } from "@/lib/constants";
 import { useFilters } from "@/hooks/useFilters";
+import { useAuthStore } from "@/stores/authStore";
 
 const { Header, Content } = Layout;
 const { RangePicker } = DatePicker;
@@ -54,11 +56,18 @@ export function MainLayout() {
   const { token } = theme.useToken();
   const { appId, setAppId, dateRange, setDateRange, loading, refresh } =
     useFilters();
+  const user = useAuthStore((s) => s.user);
+  const clearSession = useAuthStore((s) => s.clearSession);
 
   const selectedKey = useMemo(() => {
     const match = NAV_ITEMS.find((item) => pathname.startsWith(item.key));
     return match?.key || "/stability";
   }, [pathname]);
+
+  const onLogout = () => {
+    clearSession();
+    navigate("/login", { replace: true });
+  };
 
   return (
     <Layout className="app-layout">
@@ -128,6 +137,17 @@ export function MainLayout() {
             loading={loading}
           >
             刷新
+          </Button>
+          <Typography.Text type="secondary" style={{ whiteSpace: "nowrap" }}>
+            {user?.username || "admin"}
+          </Typography.Text>
+          <Button
+            type="text"
+            icon={<LogoutOutlined />}
+            onClick={onLogout}
+            aria-label="退出登录"
+          >
+            退出
           </Button>
         </Space>
       </Header>
