@@ -48,6 +48,9 @@ export interface HourlyPoint {
   domReady: number;
   ttfb: number;
   spaLcp: number;
+  fcpP50: number;
+  lcpP50: number;
+  loadP50: number;
 }
 
 /** 行为 + 稳定性小时点（来自 event_hourly_stats） */

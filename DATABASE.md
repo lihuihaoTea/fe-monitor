@@ -1,7 +1,7 @@
 # fe-monitor 数据库设计文档
 
 > 本文档供开发 Agent 使用，描述当前 PostgreSQL 数据库的表结构、索引、约束及业务逻辑。
-> 最后更新：2026-11-12（小时行为/稳定性聚合 + PV Top/Bottom 20 + 明细双 TTL 清理）
+> 最后更新：2026-11-12（P50 写入日/小时聚合；Stats 读路径离开 events）
 
 ## 连接信息
 
@@ -152,12 +152,13 @@ pnpm db:filters -- remove --id <id>
 | dom_ready_min / dom_ready_max | bigint | NULL | DOM Ready 当日最小/最大 |
 | ttfb_sum / ttfb_count / min / max | bigint/int | 0/NULL | TTFB（来自 load.data.ttfb） |
 | spa_lcp_sum / spa_lcp_count / min / max | bigint/int | 0/NULL | SPA 路由级 LCP |
+| fcp_p50 / lcp_p50 / load_p50 / dom_ready_p50 / ttfb_p50 / spa_lcp_p50 | bigint | NULL | 当日精确 P50（ms）；无样本为 NULL |
 | perf_over_budget | integer | 0 | 超 `PERF_MAX_METRIC_MS`（默认 60s）丢弃次数 |
 
 - **主键**: `(app_id, date)`
 - **索引**: `idx_daily_stats_date (date)` — 按日期范围查询
 - **区间汇总**：`SUM(sum)/SUM(count)` 得平均；`MIN(min)` / `MAX(max)` 得区间极值
-- **P50**：Stats API 对 TTL 内 `events` 明细做 `percentile_cont(0.5)`，不落日表
+- **P50**：写入日表；上报批末 / `rebuild-daily` 用 `percentile_cont(0.5)` 回填。区间汇总按日 P50 以 `count` **加权近似**（单日精确）
 
 #### 重建命令
 
@@ -205,10 +206,11 @@ pnpm db:rebuild-daily    # 全量重建（事务+锁表，防并发冲突）
 | value_sum | bigint | 0 | 该小时该指标总和（ms） |
 | value_count | int | 0 | 样本数 |
 | value_min / value_max | bigint | NULL | 最小/最大 |
+| value_p50 | bigint | NULL | 该小时精确 P50（ms） |
 
 - **主键**: `(app_id, hour_start, metric)`
 - **索引**: `idx_hourly_perf_app_hour (app_id, hour_start)`
-- **用途**: 性能看板「选中单日」时按小时画趋势；写入时与日聚合同事务增量 UPSERT
+- **用途**: 性能看板「选中单日」时按小时画趋势；写入时与日聚合同事务增量 UPSERT；P50 在上报批末 / rebuild 回填
 
 ---
 
@@ -323,12 +325,12 @@ pnpm db:rebuild-daily                  # 重建聚合数据
 | blank | no-visible-content / no-root | 白屏检测（SDK 多次抽检挂载点 + 视口中心） |
 
 ### 7. 性能看板读路径
-- 汇总 avg/min/max：`event_daily_stats`
-- 跨天趋势：日表 avg
-- 单日趋势：`event_hourly_perf`
+- 汇总 avg/min/max/p50：`event_daily_stats`（**不再**对 `events` 做 `percentile_cont`）
+- 跨天趋势：日表 avg；跨日区间 P50 为按日 P50 的 count 加权近似
+- 单日趋势：`event_hourly_perf`（含 `value_p50`）
 - 慢页面 Top N：`event_daily_perf_urls`
-- 不再依赖 `events` 明细列表展示性能采样（明细仍可上报入库，供 rebuild）
-- **样本有效区间**：`0 < value ≤ 60000` ms（FCP/LCP/Load/domReady）。长驻 SPA / Soft Navigation 下 `startTime` 可达数天，会把 **AVG** 拉爆；SDK 上报与 `extractPerfSamples` / `rebuildDailyStats` 均丢弃超限样本。修复历史看板需在服务端部署后执行 `pnpm db:rebuild-daily`。
+- 明细仍上报入库，供 rebuild / 写入时回填 P50；TTL 后旧日 P50 仍保留在聚合表
+- **样本有效区间**：`0 < value ≤ 60000` ms（FCP/LCP/Load/domReady）。长驻 SPA / Soft Navigation 下 `startTime` 可达数天，会把 **AVG** 拉爆；SDK 上报与 `extractPerfSamples` / `rebuildDailyStats` 均丢弃超限样本。部署 P50 列后需执行 `pnpm db:rebuild-daily`。
 - **采集公式、口径差异与已知缺口**：见根目录 [`PERFORMANCE.md`](PERFORMANCE.md)。
 
 ### 8. 行为 / 稳定性看板读路径

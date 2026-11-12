@@ -2,7 +2,7 @@
 
 > 梳理 fe-monitor 中 FCP / LCP / Load / DOM Ready 的采集、校验、聚合与看板口径。  
 > 表结构细节以 [`DATABASE.md`](DATABASE.md) 为准；SDK 接入见 [`packages/sdk/README.md`](packages/sdk/README.md)。  
-> 最后更新：2026-11-12（P50/TTFB/SPA LCP/LCP flush/可配置上限/bot/LEAST 修复）
+> 最后更新：2026-11-12（P50 落日/小时聚合；Stats 读路径离开 events）
 
 ---
 
@@ -54,6 +54,7 @@ POST /api/report
 GET /api/stats
   · 读 event_daily_stats / event_hourly_perf / event_daily_perf_urls
   · avg = ROUND(sum / count)；min/max 跨日再 MIN/MAX
+  · p50 读聚合列（单日精确；跨日按 count 加权近似）
         │
         ▼
 Admin 性能看板（均值卡片 + 日/小时趋势 + URL Top）
@@ -135,9 +136,9 @@ SDK 与服务端统一（可配置）：
 
 超限：SDK 上报 `subType=over_budget`（计入 `perf_over_budget`），合法指标不进 AVG；服务端 rollup/rebuild 同样过滤。
 
-看板另提供 **P50**（对仍在 TTL 内的 `events` 明细做 `percentile_cont(0.5)`）；无明细时 P50 为 0。
+看板 **P50** 写入 `event_daily_stats.*_p50` / `event_hourly_perf.value_p50`（上报批末或 `rebuild-daily` 用 `percentile_cont(0.5)` 回填）。Stats **读路径不再扫** `events`。无样本时 P50 为 0；跨日区间为按日 P50 的 count 加权近似。
 
-> 历史脏聚合需部署后执行 `pnpm db:rebuild-daily`。
+> 部署后执行 `pnpm db:rebuild-daily` 回填历史 P50。
 
 ---
 
@@ -156,10 +157,10 @@ SDK 与服务端统一（可配置）：
 
 | 表 | 用途 |
 |----|------|
-| `event_daily_stats` | 按日：fcp/lcp/load/dom_ready/**ttfb**/**spa_lcp** + **perf_over_budget** |
-| `event_hourly_perf` | 按 `app_id × hour_start × metric`（metric 含 ttfb/spa_lcp） |
+| `event_daily_stats` | 按日：fcp/lcp/load/dom_ready/**ttfb**/**spa_lcp** + **\*_p50** + **perf_over_budget** |
+| `event_hourly_perf` | 按 `app_id × hour_start × metric`（含 **value_p50**；metric 含 ttfb/spa_lcp） |
 | `event_daily_perf_urls` | 按日 × metric × URL |
-| `events` | 原始明细；`behavior`/`performance` 默认 **7 天 TTL** |
+| `events` | 原始明细；`behavior`/`performance` 默认 **7 天 TTL**（仅供写入回填 / rebuild） |
 
 URL 规范化：去掉 search，并处理 hash 内 query（详见 `normalizePageUrl` / `DATABASE.md`）。
 
@@ -168,10 +169,10 @@ URL 规范化：去掉 search，并处理 hash 内 query（详见 `normalizePage
 | 字段 | 计算 |
 |------|------|
 | 区间平均 | `ROUND(SUM(sum) / SUM(count))` |
-| 区间 P50 | 明细 `percentile_cont(0.5)`（受 TTL 限制；无明细则为 0） |
+| 区间 P50 | 日表 `*_p50` 按 `count` 加权；单日 = 当日精确值 |
 | 区间最小 | `MIN(min)`（已处理 `NULL`） |
 | 区间最大 | `MAX(max)` |
-| 日/小时趋势 | 各 metric 的 `sum/count` |
+| 日/小时趋势 | 各 metric 的 `sum/count`；小时另有 `value_p50` |
 | 慢页 Top | URL 聚合 avg |
 | overBudget | 超上限丢弃次数 |
 
@@ -216,7 +217,7 @@ URL 规范化：去掉 search，并处理 hash 内 query（详见 `normalizePage
 
 ### 已修复
 
-1. ✅ 看板 **AVG + P50**（P50 依赖明细 TTL）
+1. ✅ 看板 **AVG + P50**（P50 落日/小时聚合；读路径不依赖明细 TTL）
 2. ✅ LCP 多时机 flush + **候选 URL 归因**
 3. ✅ **spa_lcp**（hash / history 路由级）
 4. ✅ **TTFB** 入库与看板

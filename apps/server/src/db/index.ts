@@ -164,11 +164,17 @@ export async function initDB() {
       spa_lcp_count INT NOT NULL DEFAULT 0,
       spa_lcp_min BIGINT,
       spa_lcp_max BIGINT,
+      fcp_p50 BIGINT,
+      lcp_p50 BIGINT,
+      load_p50 BIGINT,
+      dom_ready_p50 BIGINT,
+      ttfb_p50 BIGINT,
+      spa_lcp_p50 BIGINT,
       perf_over_budget INT NOT NULL DEFAULT 0,
       PRIMARY KEY (app_id, date)
     );
 
-    -- 兼容旧库：补齐 min/max / ttfb / spa_lcp / over_budget 列
+    -- 兼容旧库：补齐 min/max / ttfb / spa_lcp / p50 / over_budget 列
     ALTER TABLE event_daily_stats
       ADD COLUMN IF NOT EXISTS fcp_min BIGINT,
       ADD COLUMN IF NOT EXISTS fcp_max BIGINT,
@@ -186,6 +192,12 @@ export async function initDB() {
       ADD COLUMN IF NOT EXISTS spa_lcp_count INT NOT NULL DEFAULT 0,
       ADD COLUMN IF NOT EXISTS spa_lcp_min BIGINT,
       ADD COLUMN IF NOT EXISTS spa_lcp_max BIGINT,
+      ADD COLUMN IF NOT EXISTS fcp_p50 BIGINT,
+      ADD COLUMN IF NOT EXISTS lcp_p50 BIGINT,
+      ADD COLUMN IF NOT EXISTS load_p50 BIGINT,
+      ADD COLUMN IF NOT EXISTS dom_ready_p50 BIGINT,
+      ADD COLUMN IF NOT EXISTS ttfb_p50 BIGINT,
+      ADD COLUMN IF NOT EXISTS spa_lcp_p50 BIGINT,
       ADD COLUMN IF NOT EXISTS perf_over_budget INT NOT NULL DEFAULT 0;
 
     CREATE TABLE IF NOT EXISTS event_daily_error_types (
@@ -212,8 +224,12 @@ export async function initDB() {
       value_count INT NOT NULL DEFAULT 0,
       value_min BIGINT,
       value_max BIGINT,
+      value_p50 BIGINT,
       PRIMARY KEY (app_id, hour_start, metric)
     );
+
+    ALTER TABLE event_hourly_perf
+      ADD COLUMN IF NOT EXISTS value_p50 BIGINT;
 
     -- 性能按 URL 日聚合（Top N 下钻）
     CREATE TABLE IF NOT EXISTS event_daily_perf_urls (

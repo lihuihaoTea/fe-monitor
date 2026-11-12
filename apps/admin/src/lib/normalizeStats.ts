@@ -156,6 +156,9 @@ export function fillHourlyRange(
       domReady: toNumber(item.domReady),
       ttfb: toNumber(item.ttfb),
       spaLcp: toNumber(item.spaLcp),
+      fcpP50: toNumber(item.fcpP50),
+      lcpP50: toNumber(item.lcpP50),
+      loadP50: toNumber(item.loadP50),
     });
   }
 
@@ -171,6 +174,9 @@ export function fillHourlyRange(
         domReady: 0,
         ttfb: 0,
         spaLcp: 0,
+        fcpP50: 0,
+        lcpP50: 0,
+        loadP50: 0,
       }
     );
   }
@@ -285,6 +291,9 @@ export function normalizeStats(
       domReady: toNumber(item.domReady),
       ttfb: toNumber(item.ttfb),
       spaLcp: toNumber(item.spaLcp),
+      fcpP50: toNumber(item.fcpP50),
+      lcpP50: toNumber(item.lcpP50),
+      loadP50: toNumber(item.loadP50),
     })),
     hourlyStats: (raw?.hourlyStats || []).map((item) => ({
       hour: item.hour || '',

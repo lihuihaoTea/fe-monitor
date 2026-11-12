@@ -1,7 +1,11 @@
 import { Router } from 'express';
 import { clientQuery, withTransaction } from '../db/index.js';
 import { shouldFilterEvent } from '../filters/eventFilters.js';
-import { applyRollupWithClient } from '../db/dailyStats.js';
+import {
+  applyRollupWithClient,
+  refreshPerfP50Targets,
+  type PerfP50Target,
+} from '../db/dailyStats.js';
 import { invalidateStatsCache } from './stats.js';
 
 export const reportRouter = Router();
@@ -112,6 +116,7 @@ reportRouter.post('/', async (req, res) => {
 
     if (toInsert.length > 0) {
       await withTransaction(async (client) => {
+        const p50Targets: PerfP50Target[] = [];
         for (const row of toInsert) {
           try {
             await clientQuery(
@@ -135,15 +140,19 @@ reportRouter.post('/', async (req, res) => {
               ]
             );
 
-            await applyRollupWithClient(client, {
-              type: row.type,
-              subType: row.subType,
-              timestamp: row.timestamp,
-              appId: row.appId,
-              visitorId: row.visitorId,
-              url: row.url,
-              data: row.data,
-            });
+            await applyRollupWithClient(
+              client,
+              {
+                type: row.type,
+                subType: row.subType,
+                timestamp: row.timestamp,
+                appId: row.appId,
+                visitorId: row.visitorId,
+                url: row.url,
+                data: row.data,
+              },
+              { p50Targets }
+            );
 
             inserted++;
             touchedApps.add(row.appId);
@@ -151,6 +160,9 @@ reportRouter.post('/', async (req, res) => {
             console.error('Insert error:', err);
           }
         }
+
+        // 批末按日/小时窗口回填 P50，避免读路径扫 events
+        await refreshPerfP50Targets(client, p50Targets);
       });
 
       for (const appId of touchedApps) {
