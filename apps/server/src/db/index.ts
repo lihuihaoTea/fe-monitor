@@ -279,36 +279,38 @@ export async function initDB() {
 
   await seedDefaultFilters();
 
-  // 已有明细但缺关键聚合时自动回填
-  const dailyCount = await queryOne<{ count: string | number }>(
-    `SELECT COUNT(*)::int as count FROM event_daily_stats`
-  );
-  const hourlyCount = await queryOne<{ count: string | number }>(
-    `SELECT COUNT(*)::int as count FROM event_hourly_perf`
-  );
-  const hourlyStatsCount = await queryOne<{ count: string | number }>(
-    `SELECT COUNT(*)::int as count FROM event_hourly_stats`
-  );
-  const pvUrlCount = await queryOne<{ count: string | number }>(
-    `SELECT COUNT(*)::int as count FROM event_daily_pv_urls`
-  );
-  const eventCount = await queryOne<{ count: string | number }>(
-    `SELECT COUNT(*)::int as count FROM events`
-  );
-  const needRebuild =
-    Number(eventCount?.count) > 0 &&
-    (Number(dailyCount?.count) === 0 ||
-      Number(hourlyCount?.count) === 0 ||
-      Number(hourlyStatsCount?.count) === 0 ||
-      Number(pvUrlCount?.count) === 0);
-  if (needRebuild) {
-    console.log('检测到历史 events 或缺聚合，开始重建…');
-    const { rebuildDailyStats } = await import('./dailyStats.js');
-    await rebuildDailyStats();
-    console.log('聚合重建完成');
-  }
-
   console.log('Database initialized successfully');
+
+  // 聚合重建改为后台异步执行，避免阻塞服务启动和健康检查
+  setImmediate(async () => {
+    try {
+      const dailyCount = await queryOne<{ count: string | number }>(
+        `SELECT COUNT(*)::int as count FROM event_daily_stats`
+      );
+      const hourlyCount = await queryOne<{ count: string | number }>(
+        `SELECT COUNT(*)::int as count FROM event_hourly_perf`
+      );
+      const pvUrlCount = await queryOne<{ count: string | number }>(
+        `SELECT COUNT(*)::int as count FROM event_daily_pv_urls`
+      );
+      const eventCount = await queryOne<{ count: string | number }>(
+        `SELECT COUNT(*)::int as count FROM events`
+      );
+      const needRebuild =
+        Number(eventCount?.count) > 0 &&
+        (Number(dailyCount?.count) === 0 ||
+          Number(hourlyCount?.count) === 0 ||
+          Number(pvUrlCount?.count) === 0);
+      if (needRebuild) {
+        console.log('[bg] 检测到历史 events 或缺聚合，后台开始重建…');
+        const { rebuildDailyStats } = await import('./dailyStats.js');
+        await rebuildDailyStats();
+        console.log('[bg] 聚合重建完成');
+      }
+    } catch (err) {
+      console.error('[bg] 聚合重建失败:', err);
+    }
+  });
 }
 
 /** 首次初始化写入默认筛除项（已存在则跳过） */

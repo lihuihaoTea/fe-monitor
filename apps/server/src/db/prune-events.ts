@@ -11,7 +11,8 @@
  */
 import { initDB, closeDB, queryOne, execute } from './index.js';
 
-const BATCH_SIZE = 2000;
+const BATCH_SIZE = 500;
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 /** 已有小时/日聚合覆盖看板趋势 */
 const AGG_BACKED_TYPES = ['behavior', 'performance'] as const;
@@ -68,6 +69,7 @@ export async function pruneExpiredEvents(options?: {
       );
       if (!result) break;
       batchDeleted += result;
+      await sleep(200); // throttle IO to avoid blocking
       if (result < BATCH_SIZE) break;
     }
     return { deleted: batchDeleted, total: batchTotal, cutoff };
